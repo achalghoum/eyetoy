@@ -24,9 +24,7 @@ class HeadParams(dataclass):
     in_channels: Optional[int]
     intermediate_channels: Optional[int]
     out_channels: Optional[int]
-    query_params: ConvParams
-    key_params: ConvParams
-    value_params: ConvParams
+    shared_conv_params: ConvParams
     attn_params: Optional[NeighborhoodAttentionParams] = NeighborhoodAttentionParams()
     is_causal: Optional[bool] = False
 
@@ -38,6 +36,8 @@ class MultiHeadAttentionParams(dataclass):
     intermediate_channels: Optional[int] = None
     out_channels: Optional[int] = None
     final_conv_params: ConvParams
+    stride: Optional[int] = 1
+    padding: Optional[int] = 0
 
     def __post_init__(self):
         if len(self.head_params) != self.num_heads:

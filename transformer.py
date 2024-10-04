@@ -16,7 +16,8 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
     conv_type: Type[ConvType]
 
     def __init__(self, num_heads: int, head_params: List[HeadParams], in_channels: int,
-                 intermediate_channels: int, out_channels: int, final_conv_params: ConvParams):
+                 intermediate_channels: int, out_channels: int, final_conv_params: ConvParams, stride: int, padding: int):
+        super().__init__()
         self.attention_heads = torch.nn.ModuleList([
             self.conv_attn_type(**head_param.__dict__) for head_param in head_params
         ])
@@ -25,11 +26,26 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
         self.in_channels = in_channels
         self.intermediate_channels = intermediate_channels
         self.out_channels = out_channels
+        self.stride = stride
+        self.padding = padding
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        head_outputs = torch.cat([head(x) for head in self.attention_heads], dim=-1)
-        return self.final_conv(head_outputs)
+        # Compute output size
+        input_size = x.shape[2:]  # Assuming NCHW or NCDHW format
+        output_size = [(i + 2 * self.padding - 1) // self.stride + 1 for i in input_size]
 
+        # Process all heads at once
+        head_outputs = torch.stack([head(x) for head in self.attention_heads], dim=1)
+
+        # Resize all head outputs at once
+        resized_outputs = torch.nn.functional.interpolate(head_outputs.flatten(0, 1), size=output_size, mode='nearest')
+        resized_outputs = resized_outputs.view(x.shape[0], self.num_heads, -1, *output_size)
+
+        # Concatenate head outputs along the channel dimension
+        combined_output = resized_outputs.flatten(1, 2)
+
+        # Apply final convolution
+        return self.final_conv(combined_output)
 
 class ConvMultiHeadNAT2D(ConvMultiHeadNAT[Conv2d, ConvNAT2D]):
     conv_attn_type = ConvNAT2D
@@ -134,21 +150,32 @@ class GlobalAttentionBlock(Module):
 
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
+    def __init__(self, d_model: int, dropout: float = 0.1):
         super().__init__()
         self.dropout = nn.Dropout(p=dropout)
-
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)
+        self.d_model = d_model
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: Tensor, shape [seq_len, batch_size, embedding_dim]
+            x: Tensor, shape [batch_size, seq_len, embedding_dim]
+            where seq_len can vary within the batch
         """
-        x = x + self.pe[:x.size(0)]
+        batch_size, max_seq_len, _ = x.shape
+        
+        # Create position tensor for the longest sequence
+        position = torch.arange(max_seq_len, device=x.device).unsqueeze(0).unsqueeze(-1)
+        div_term = torch.exp(torch.arange(0, self.d_model, 2, device=x.device) * (-math.log(10000.0) / self.d_model))
+        
+        # Calculate PE for the longest sequence
+        pe = torch.zeros(1, max_seq_len, self.d_model, device=x.device)
+        pe[0, :, 0::2] = torch.sin(position * div_term)
+        pe[0, :, 1::2] = torch.cos(position * div_term)
+        
+        # Create a mask for valid positions in each sequence
+        mask = torch.arange(max_seq_len, device=x.device)[None, :] < (x != 0).sum(dim=-1)[:, None]
+        
+        # Apply PE only to valid positions
+        x = x + (pe * mask.unsqueeze(-1))
+        
         return self.dropout(x)

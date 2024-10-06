@@ -9,6 +9,7 @@ from torch.nn import Module, Conv2d, Conv3d
 from attention import ConvNAT2D, ConvNAT3D
 from generics import ConvType, ConvNATType, ConvMultiHeadNATType
 from params import HeadParams, ConvParams, MultiHeadAttentionParams
+from positional_encoding import positional_encoding
 
 
 class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
@@ -108,7 +109,6 @@ class GlobalAttentionBlock(Module):
         self.attention = nn.MultiheadAttention(d_model, num_heads, dropout=dropout,
                                                batch_first=True)
         self.layernorm = nn.LayerNorm(d_model)
-        self.positional_encoding = PositionalEncoding(d_model, dropout=dropout)
 
     def forward(self, x: torch.Tensor, context_token: Optional[torch.Tensor] = None) -> Tuple[
         torch.Tensor, torch.Tensor]:
@@ -116,12 +116,11 @@ class GlobalAttentionBlock(Module):
         # context_token shape (if provided): (batch_size, 1, d_model)
         batch_size = x.shape[0]
         original_shape = x.shape
-
+        positional_encoding = positional_encoding(x)
+        # Add positional encoding
+        x = x + positional_encoding
         # Flatten the spatial dimensions
         x_flat = x.flatten(2).transpose(1, 2)  # (batch_size, H*W or D*H*W, channels)
-
-        # Add positional encoding
-        x_flat = self.positional_encoding(x_flat)
 
         # Use input context token or learned parameter
         if self.use_input_context_token:
@@ -147,35 +146,3 @@ class GlobalAttentionBlock(Module):
         feature_map_out = feature_map_out.transpose(1, 2).reshape(original_shape)
 
         return feature_map_out, context_token_out
-
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, dropout: float = 0.1):
-        super().__init__()
-        self.dropout = nn.Dropout(p=dropout)
-        self.d_model = d_model
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Tensor, shape [batch_size, seq_len, embedding_dim]
-            where seq_len can vary within the batch
-        """
-        batch_size, max_seq_len, _ = x.shape
-        
-        # Create position tensor for the longest sequence
-        position = torch.arange(max_seq_len, device=x.device).unsqueeze(0).unsqueeze(-1)
-        div_term = torch.exp(torch.arange(0, self.d_model, 2, device=x.device) * (-math.log(10000.0) / self.d_model))
-        
-        # Calculate PE for the longest sequence
-        pe = torch.zeros(1, max_seq_len, self.d_model, device=x.device)
-        pe[0, :, 0::2] = torch.sin(position * div_term)
-        pe[0, :, 1::2] = torch.cos(position * div_term)
-        
-        # Create a mask for valid positions in each sequence
-        mask = torch.arange(max_seq_len, device=x.device)[None, :] < (x != 0).sum(dim=-1)[:, None]
-        
-        # Apply PE only to valid positions
-        x = x + (pe * mask.unsqueeze(-1))
-        
-        return self.dropout(x)

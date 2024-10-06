@@ -9,6 +9,7 @@ from torch.nn import Module, Conv2d, Conv3d
 from attention import ConvNAT2D, ConvNAT3D
 from generics import ConvType, ConvNATType, ConvMultiHeadNATType
 from params import HeadParams, ConvParams, MultiHeadAttentionParams
+from positional_encoding import positional_encoding
 
 
 class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
@@ -92,7 +93,6 @@ class GlobalAttentionBlock(Module):
         self.attention = nn.MultiheadAttention(d_model, num_heads, dropout=dropout,
                                                batch_first=True)
         self.layernorm = nn.LayerNorm(d_model)
-        self.positional_encoding = PositionalEncoding(d_model, dropout=dropout)
 
     def forward(self, x: torch.Tensor, context_token: Optional[torch.Tensor] = None) -> Tuple[
         torch.Tensor, torch.Tensor]:
@@ -100,12 +100,11 @@ class GlobalAttentionBlock(Module):
         # context_token shape (if provided): (batch_size, 1, d_model)
         batch_size = x.shape[0]
         original_shape = x.shape
-
+        positional_encoding = positional_encoding(x)
+        # Add positional encoding
+        x = x + positional_encoding
         # Flatten the spatial dimensions
         x_flat = x.flatten(2).transpose(1, 2)  # (batch_size, H*W or D*H*W, channels)
-
-        # Add positional encoding
-        x_flat = self.positional_encoding(x_flat)
 
         # Use input context token or learned parameter
         if self.use_input_context_token:
@@ -131,24 +130,3 @@ class GlobalAttentionBlock(Module):
         feature_map_out = feature_map_out.transpose(1, 2).reshape(original_shape)
 
         return feature_map_out, context_token_out
-
-
-class PositionalEncoding(nn.Module):
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
-        super().__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        position = torch.arange(max_len).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
-        pe = torch.zeros(max_len, 1, d_model)
-        pe[:, 0, 0::2] = torch.sin(position * div_term)
-        pe[:, 0, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Tensor, shape [seq_len, batch_size, embedding_dim]
-        """
-        x = x + self.pe[:x.size(0)]
-        return self.dropout(x)

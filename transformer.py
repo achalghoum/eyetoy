@@ -1,12 +1,11 @@
-import math
 from abc import ABC
 from typing import Type, Generic, List, Optional, Tuple
 
 import torch
 from torch import nn
-from torch.nn import Module, Conv2d, Conv3d
+from torch.nn import Module, Conv2d, Conv3d, Conv1d
 
-from attention import ConvNAT2D, ConvNAT3D
+from attention import ConvNAT2D, ConvNAT3D, ConvNAT1D
 from generics import ConvType, ConvNATType, ConvMultiHeadNATType
 from params import HeadParams, ConvParams, MultiHeadAttentionParams
 from positional_encoding import positional_encoding
@@ -17,7 +16,8 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
     conv_type: Type[ConvType]
 
     def __init__(self, num_heads: int, head_params: List[HeadParams], in_channels: int,
-                 intermediate_channels: int, out_channels: int, final_conv_params: ConvParams, stride: int, padding: int):
+                 intermediate_channels: int, out_channels: int, final_conv_params: ConvParams,
+                 scale_factor: float):
         super().__init__()
         self.attention_heads = torch.nn.ModuleList([
             self.conv_attn_type(**head_param.__dict__) for head_param in head_params
@@ -27,33 +27,39 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
         self.in_channels = in_channels
         self.intermediate_channels = intermediate_channels
         self.out_channels = out_channels
-        self.stride = stride
-        self.padding = padding
+        self.scale_factor = scale_factor
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Compute output size
+        # Compute output size based on scale factor
         input_size = x.shape[2:]  # Assuming NCHW or NCDHW format
-        output_size = [(i + 2 * self.padding - 1) // self.stride + 1 for i in input_size]
+        output_size = [int(i * self.scale_factor) for i in input_size]
 
-        # Process all heads at once
-        head_outputs = torch.stack([head(x) for head in self.attention_heads], dim=1)
+        # Process all heads for all batches
+        batch_size = x.shape[0]
+        head_outputs = [head(x) for head in self.attention_heads]
 
-        # Resize all head outputs at once
-        resized_outputs = torch.nn.functional.interpolate(head_outputs.flatten(0, 1), size=output_size, mode='nearest')
-        resized_outputs = resized_outputs.view(x.shape[0], self.num_heads, -1, *output_size)
+        # Resize all head outputs to match the scaled input size
+        resized_outputs = [torch.nn.functional.interpolate(output, size=output_size, mode='nearest')
+                           for output in head_outputs]
 
-        # Concatenate head outputs along the channel dimension
-        combined_output = resized_outputs.flatten(1, 2)
+        # Concatenate head outputs along the channel dimension for each batch
+        combined_output = torch.cat(resized_outputs, dim=1)
 
         # Apply final convolution
         return self.final_conv(combined_output)
+
+
+class ConvMultiHeadNAT1D(ConvMultiHeadNAT[Conv1d, ConvNAT1D]):
+    conv_attn_type = ConvNAT1D
+    conv_type = Conv1d
+
 
 class ConvMultiHeadNAT2D(ConvMultiHeadNAT[Conv2d, ConvNAT2D]):
     conv_attn_type = ConvNAT2D
     conv_type = Conv2d
 
 
-class ConvMultiHeadNAT3D(ConvMultiHeadNAT[Conv2d, ConvNAT3D]):
+class ConvMultiHeadNAT3D(ConvMultiHeadNAT[Conv3d, ConvNAT3D]):
     conv_attn_type = ConvNAT3D
     conv_type = Conv3d
 
@@ -64,6 +70,7 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
 
     def __init__(self, attention_params: MultiHeadAttentionParams, final_conv_params: ConvParams,
                  use_gated_residuals: bool = False, gated_residuals_params: ConvParams = None):
+        super(Module).__init__()
         self.multi_head_attention = self.multi_head_attention_type(**attention_params.__dict__)
         self.final_conv = self.conv_type(**final_conv_params.__dict__)
         self.use_gated_residuals = use_gated_residuals
@@ -86,6 +93,11 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
         return self.layernorm(residual)
 
 
+class ConvNATTransformer1D(ConvNATTransformer[Conv1d, ConvMultiHeadNAT1D]):
+    multi_head_attention_type = ConvMultiHeadNAT1D
+    conv_type = Conv1d
+
+
 class ConvNATTransformer2D(ConvNATTransformer[Conv2d, ConvMultiHeadNAT2D]):
     multi_head_attention_type = ConvMultiHeadNAT2D
     conv_type = Conv2d
@@ -97,7 +109,7 @@ class ConvNATTransformer3D(ConvNATTransformer[Conv3d, ConvMultiHeadNAT3D]):
 
 
 class GlobalAttentionBlock(Module):
-    
+
     def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1,
                  use_input_context_token: bool = False):
         super().__init__()
@@ -116,9 +128,9 @@ class GlobalAttentionBlock(Module):
         # context_token shape (if provided): (batch_size, 1, d_model)
         batch_size = x.shape[0]
         original_shape = x.shape
-        positional_encoding = positional_encoding(x)
+        pe = positional_encoding(x)
         # Add positional encoding
-        x = x + positional_encoding
+        x = x + pe
         # Flatten the spatial dimensions
         x_flat = x.flatten(2).transpose(1, 2)  # (batch_size, H*W or D*H*W, channels)
 
@@ -132,8 +144,20 @@ class GlobalAttentionBlock(Module):
         # Append context token to the flattened feature map
         x_with_context = torch.cat([context_token, x_flat], dim=1)
 
-        # Apply self-attention
-        attn_output, _ = self.attention(x_with_context, x_with_context, x_with_context)
+        # Create attention mask
+        seq_len = x_with_context.size(1)
+        mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device)
+        mask[0, :] = False  # Context token can attend to all tokens
+        mask[1:, 1:] = True  # Other tokens cannot attend to each other
+
+        if self.use_input_context_token:
+            mask[1:, 0] = False  # All tokens can attend to the context token
+        else:
+            mask[1:, 0] = True  # Unless we are at the first layer 
+
+        # Apply self-attention with mask
+        attn_output, _ = self.attention(x_with_context, x_with_context, x_with_context,
+                                        attn_mask=mask)
 
         # Apply layer normalization
         output = self.layernorm(attn_output + x_with_context)
@@ -146,3 +170,5 @@ class GlobalAttentionBlock(Module):
         feature_map_out = feature_map_out.transpose(1, 2).reshape(original_shape)
 
         return feature_map_out, context_token_out
+
+

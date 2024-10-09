@@ -136,6 +136,7 @@ class TransformerParams:
             self.attention_params.out_channels = self.out_channels
         if not self.attention_params.intermediate_channels:
             self.attention_params.intermediate_channels = max(self.in_channels,self.out_channels)//self.attention_params.num_heads
+        self.attention_params.scale_factor = self.scale_factor
         if not self.final_conv_params:
             self.final_conv_params = ConvParams(kernel_size=1,
                                                 in_channels=self.attention_params.out_channels,

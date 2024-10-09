@@ -68,16 +68,15 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
     multi_head_attention_type: Type[ConvMultiHeadNATType]
     conv_type: Type[ConvType]
 
-    def __init__(self, attention_params: MultiHeadAttentionParams, final_conv_params: ConvParams,
-                 use_gated_residuals: bool = False, gated_residuals_params: ConvParams = None):
+    def __init__(self,in_channels:int, out_channels:int, attention_params: MultiHeadAttentionParams, final_conv_params: ConvParams,
+                 use_gated_residuals: bool = False, gated_residuals_params: Optional[ConvParams] = None, *kwargs):
         super(Module).__init__()
         self.multi_head_attention = self.multi_head_attention_type(**attention_params.__dict__)
         self.final_conv = self.conv_type(**final_conv_params.__dict__)
         self.use_gated_residuals = use_gated_residuals
-        if use_gated_residuals:
+        if use_gated_residuals and gated_residuals_params:
             self.gated_residuals = self.conv_type(**gated_residuals_params.__dict__)
-        layernorm_channels = final_conv_params.out_channels if not use_gated_residuals else gated_residuals_params.out_channels
-        self.layernorm = torch.nn.LayerNorm(layernorm_channels)
+        self.layernorm = torch.nn.LayerNorm(out_channels)
 
     def residual(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         if self.use_gated_residuals:

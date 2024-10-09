@@ -50,8 +50,8 @@ class GlobalAttentionStack(Module):
     def forward(self, x: torch.Tensor) -> Tuple[
         torch.Tensor, torch.Tensor]:
         output, context_token = self.attention_blocks[0](x)
-        for block in self.attention_blocks[1:]:
-            output, context_token = block(output, context_token)
+        for i in range(1, len(self.attention_blocks)):
+            output, context_token = self.attention_blocks[i](output, context_token)
         return output, context_token
 
 
@@ -61,14 +61,14 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
     def __init__(self, transformer_params: List[TransformerParams], num_global_attention_heads: int,
                  global_attention_dropout: float, num_global_attention_layers: int):
         super().__init__()
-        self.transformer_sequence = self.transformer_stack_type(**transformer_params.__dict__)
+        self.transformer_stack = self.transformer_stack_type(**transformer_params.__dict__)
         self.global_attention = GlobalAttentionStack(
-            transformer_params[-1].final_conv_params.out_channels,
+            transformer_params[-1].out_channels,
             num_global_attention_heads, num_global_attention_layers,
             global_attention_dropout)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        transformed_input = self.transformer_sequence(x)
+        transformed_input = self.transformer_stack(x)
         output, context_token = self.global_attention(transformed_input)
         return output, context_token
 

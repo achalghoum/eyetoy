@@ -1,5 +1,7 @@
+from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, Callable, List, Optional
+from math import gcd
 
 
 @dataclass
@@ -9,16 +11,28 @@ class ConvParams:
     out_channels: Optional[int] = None
     padding: str = "valid"
     bias: bool = True
-    activation: str = "swiglu"
     dilation: int = 0
     stride: int = 1
+    groups: int = 4
 
-CONV_1X1 = ConvParams(kernel_size=1, stride=1, padding="same")
-CONV_3X3 = ConvParams(kernel_size=3, stride=1, padding="same")
-CONV_5X5 = ConvParams(kernel_size=5, stride=2)
-CONV_11X11 = ConvParams(kernel_size=11, stride=6)
-CONV_17X17 = ConvParams(kernel_size=17, stride=17)
+    def __post_init__(self):
+        self._update_groups()
 
+    def __setattr__(self, name, value):
+        super().__setattr__(name, value)
+        if name in ['in_channels', 'out_channels', 'groups']:
+            self._update_groups()
+
+    def _update_groups(self):
+        if self.in_channels is not None and self.out_channels is not None:
+            if self.in_channels % self.groups != 0 or self.out_channels % self.groups != 0:
+                self.groups = gcd(self.in_channels, self.out_channels)
+
+CONV_1X1 = ConvParams(kernel_size=1, stride=1, padding="same", groups=1)
+CONV_4X4 = ConvParams(kernel_size=4, stride=1, padding="same")
+CONV_8X8 = ConvParams(kernel_size=8, stride=2)
+CONV_12X12 = ConvParams(kernel_size=12, stride=6)
+CONV_16X16 = ConvParams(kernel_size=16, stride=16)
 
 
 @dataclass
@@ -28,72 +42,77 @@ class NeighborhoodAttentionParams:
     min_dilation: int = 0
     max_dilation: int = 3
 
-ATTENTION_3X3 = NeighborhoodAttentionParams(min_kernel_size=3, max_kernel_size=5, min_dilation=0, max_dilation=0)
-ATTENTION_5X5 = NeighborhoodAttentionParams(min_kernel_size=7, max_kernel_size=13, min_dilation=0, max_dilation=2)
-ATTENTION_11X11 = NeighborhoodAttentionParams(min_kernel_size=11, max_kernel_size=17, min_dilation=0, max_dilation=5)
-ATTENTION_17X17 = NeighborhoodAttentionParams(min_kernel_size=13, max_kernel_size=19, min_dilation=0, max_dilation=7)
+
+ATTENTION_3X3 = NeighborhoodAttentionParams(
+    min_kernel_size=3, max_kernel_size=5, min_dilation=0, max_dilation=0)
+ATTENTION_5X5 = NeighborhoodAttentionParams(
+    min_kernel_size=7, max_kernel_size=13, min_dilation=0, max_dilation=2)
+ATTENTION_11X11 = NeighborhoodAttentionParams(
+    min_kernel_size=11, max_kernel_size=17, min_dilation=0, max_dilation=5)
+ATTENTION_17X17 = NeighborhoodAttentionParams(
+    min_kernel_size=13, max_kernel_size=19, min_dilation=0, max_dilation=7)
 
 
 @dataclass
 class HeadParams:
     conv_params: ConvParams
+    attn_params: NeighborhoodAttentionParams
     in_channels: Optional[int] = None
-    out_channels: Optional[int] = None	
-    attn_params: NeighborhoodAttentionParams = field(default_factory=NeighborhoodAttentionParams)
+    out_channels: Optional[int] = None
     intermediate_channels: Optional[int] = None
     is_causal: bool = False
+    _initializing: bool = True
 
     def __post_init__(self):
         if self.conv_params is None:
             raise ValueError("conv_params must be provided")
-        if self.in_channels is None:
-            raise ValueError("in_channels must be provided")
-        self.intermediate_channels = self.intermediate_channels or self.in_channels
         self.out_channels = self.out_channels or self.in_channels
         self.conv_params.in_channels = self.conv_params.in_channels or self.in_channels
         self.conv_params.out_channels = self.conv_params.out_channels or self.intermediate_channels
-    
+        self._initializing = False
+
     def __setattr__(self, name, value):
         super().__setattr__(name, value)
+        if self._initializing:
+            return True
         if name == 'in_channels':
             self.conv_params.in_channels = self.conv_params.in_channels or value
         elif name == 'intermediate_channels':
             self.conv_params.out_channels = value
 
 
-HEAD_3X3 = HeadParams(conv_params=CONV_3X3, intermediate_channels=32, attn_params=ATTENTION_3X3)
-HEAD_5X5 = HeadParams(conv_params=CONV_5X5, intermediate_channels=64, attn_params=ATTENTION_5X5)
-HEAD_11X11 = HeadParams(conv_params=CONV_11X11, intermediate_channels=128, attn_params=ATTENTION_11X11)
-HEAD_17X17 = HeadParams(conv_params=CONV_17X17, intermediate_channels=256, attn_params=ATTENTION_17X17)
-
 @dataclass
 class MultiHeadAttentionParams:
     num_heads: int
     head_params: List[HeadParams]
     final_conv_params: ConvParams
-    scale_factor: int = 1
+    scale_factor: float = 1
     intermediate_channels: Optional[int] = None
     in_channels: Optional[int] = None
     out_channels: Optional[int] = None
 
     def __post_init__(self):
         if len(self.head_params) != self.num_heads:
-            raise ValueError("Number of heads must match number of head params")
+            raise ValueError(
+                "Number of heads must match number of head params")
         self.intermediate_channels = self.intermediate_channels or self.in_channels // self.num_heads if self.in_channels is not None else None
         self.out_channels = self.out_channels or self.in_channels
-        
+
         for head in self.head_params:
             head.in_channels = head.in_channels or self.in_channels
             head.intermediate_channels = head.intermediate_channels or self.intermediate_channels
-            head.out_channels = head.out_channels or self.intermediate_channels
+            head.out_channels = head.out_channels or head.intermediate_channels or self.intermediate_channels
             head.conv_params.in_channels = head.conv_params.in_channels or head.in_channels
             head.conv_params.out_channels = head.conv_params.out_channels or head.intermediate_channels
 
         if self.final_conv_params is None:
-            total_out_channels = sum(head.out_channels for head in self.head_params if head.out_channels is not None)
-            self.final_conv_params = ConvParams(kernel_size=1, in_channels=total_out_channels, out_channels=self.out_channels)
+            total_out_channels = sum(
+                head.out_channels for head in self.head_params if head.out_channels is not None)
+            self.final_conv_params = ConvParams(
+                kernel_size=1, in_channels=total_out_channels, out_channels=self.out_channels)
         else:
-            self.final_conv_params.in_channels = self.final_conv_params.in_channels or sum(head.out_channels for head in self.head_params if head.out_channels is not None)
+            self.final_conv_params.in_channels = self.final_conv_params.in_channels or sum(
+                head.out_channels for head in self.head_params if head.out_channels is not None)
             self.final_conv_params.out_channels = self.final_conv_params.out_channels or self.out_channels
 
     def __setattr__(self, name, value):
@@ -106,66 +125,82 @@ class MultiHeadAttentionParams:
                     head.intermediate_channels = head.intermediate_channels or value
                 elif name == 'out_channels':
                     head.out_channels = head.out_channels or value
-                head.conv_params.in_channels =  head.in_channels
+                head.conv_params.in_channels = head.in_channels
                 head.conv_params.out_channels = head.conv_params.out_channels or head.intermediate_channels
             if name == 'out_channels':
                 self.final_conv_params.out_channels = self.final_conv_params.out_channels or value
 
-DEFAULT_MULTIHEAD_ATTENTION = MultiHeadAttentionParams(num_heads=4,
-                                                       head_params=[HEAD_3X3, HEAD_5X5, HEAD_11X11, HEAD_17X17],
-                                                       final_conv_params=CONV_1X1)
+
+
+def get_default_encoder_multihead_attn_params(out_channels):
+    head_3x3 = HeadParams(conv_params=deepcopy(
+        CONV_4X4), intermediate_channels=out_channels//4, attn_params=deepcopy(ATTENTION_3X3))
+    head_5x5 = HeadParams(conv_params=deepcopy(
+        CONV_8X8), intermediate_channels=out_channels//4, attn_params=deepcopy(ATTENTION_5X5))
+    head_11x11 = HeadParams(conv_params=deepcopy(
+        CONV_12X12), intermediate_channels=out_channels//2, attn_params=deepcopy(ATTENTION_11X11))
+    head_17x17 = HeadParams(conv_params=deepcopy(
+        CONV_16X16), intermediate_channels=out_channels, attn_params=deepcopy(ATTENTION_17X17))
+    return MultiHeadAttentionParams(num_heads=4,
+                                    head_params=[head_3x3, head_5x5,
+                                                 head_11x11, head_17x17],
+                                    final_conv_params=deepcopy(CONV_1X1))
+
 
 DEFAULT_NUM_HEADS = 4
+
 
 @dataclass
 class TransformerParams:
     in_channels: int
     out_channels: int
-    attention_params: Optional[MultiHeadAttentionParams] = DEFAULT_MULTIHEAD_ATTENTION
-    final_conv_params: Optional[ConvParams] = CONV_1X1	
-    use_gated_residuals: bool = True
-    gated_residual_conv_params: Optional[ConvParams] = CONV_1X1
-    scale_factor: int = 1
+    attention_params: Optional[MultiHeadAttentionParams] = None
+    gated_residuals_params: Optional[ConvParams] = None
+    final_conv_params: Optional[ConvParams] = None
+    use_gated_residuals: bool = False
+    scale_factor: float = 1
+    head_builder: Callable[[
+        int], MultiHeadAttentionParams] = get_default_encoder_multihead_attn_params
 
     def __post_init__(self):
         if not self.attention_params:
-            self.attention_params = DEFAULT_MULTIHEAD_ATTENTION
+            self.attention_params = self.head_builder(self.out_channels)
         if not self.attention_params.in_channels:
             self.attention_params.in_channels = self.in_channels
         if not self.attention_params.out_channels:
             self.attention_params.out_channels = self.out_channels
         if not self.attention_params.intermediate_channels:
-            self.attention_params.intermediate_channels = max(self.in_channels,self.out_channels)//self.attention_params.num_heads
+            self.attention_params.intermediate_channels = max(
+                self.in_channels, self.out_channels)//self.attention_params.num_heads
         self.attention_params.scale_factor = self.scale_factor
         if not self.final_conv_params:
-            self.final_conv_params = ConvParams(kernel_size=1,
-                                                in_channels=self.attention_params.out_channels,
-                                                out_channels=self.out_channels)
+            self.final_conv_params = deepcopy(CONV_1X1)
         if not self.final_conv_params.in_channels:
             self.final_conv_params.in_channels = self.attention_params.out_channels
         if not self.final_conv_params.out_channels:
             self.final_conv_params.out_channels = self.out_channels
         if self.use_gated_residuals and self.gated_residual_conv_params is None:
             self.gated_residual_conv_params = ConvParams(kernel_size=1,
-                                                         in_channels=self.attention_params.out_channels + self.final_conv_params.out_channels,
-                                                         out_channels= 1,
+                                                         in_channels=self.attention_params.out_channels +
+                                                         self.final_conv_params.out_channels,
+                                                         out_channels=1,
                                                          activation="sigmoid")
 
     def __setattr__(self, name, value):
         super().__setattr__(name, value)
-        if name in ['in_channels', 'out_channels', 'scale_factor'] and hasattr(self, 'attention_params'):
+        if name in ['in_channels', 'out_channels', 'scale_factor'] and hasattr(self, 'attention_params') and self.attention_params is not None:
             setattr(self.attention_params, name, value)
-        if name == 'out_channels' and hasattr(self, 'final_conv_params'):
+        if name == 'out_channels' and hasattr(self, 'final_conv_params') and self.final_conv_params is not None:
             self.final_conv_params.out_channels = self.final_conv_params.out_channels or value
-        if name == 'out_channels' and hasattr(self, 'gated_residual_conv_params'):
-            self.gated_residual_conv_params.out_channels = self.gated_residual_conv_params.out_channels or value
-        if name =='out_channel' and hasattr(self,'attention_params') and self.use_gated_residuals:
+        if name == 'out_channel' and hasattr(self, 'attention_params') and self.attention_params is not None:
             self.attention_params.out_channels = value
-        if self.use_gated_residuals and self.gated_residual_conv_params is None:
-            self.gated_residual_conv_params = ConvParams(kernel_size=1,
-                                                         in_channels=self.attention_params.out_channels + self.final_conv_params.out_channels,
-                                                         out_channels= 1,
-                                                         activation="sigmoid")
+        if self.use_gated_residuals and self.gated_residual_conv_params is None and self.final_conv_params and self.attention_params:
+            if self.final_conv_params.out_channels and self.attention_params.out_channels:
+                self.gated_residual_conv_params = ConvParams(kernel_size=1,
+                                                             in_channels=self.attention_params.out_channels +
+                                                             self.final_conv_params.out_channels,
+                                                             out_channels=1,
+                                                             activation="sigmoid")
 
 
 @dataclass
@@ -173,15 +208,39 @@ class GlobalAttentionParams:
     num_heads: int
     dropout: float = 0.1
 
+
 @dataclass
 class EncoderParams:
     transformer_params: List[TransformerParams]
-    num_global_attention_heads: int
-    global_attention_dropout: float
     num_global_attention_layers: int
+    num_global_attention_heads: int = 16
+    global_attention_dropout: float = 0.1
 
-    def __post_init__(self):
-        for i in range(1, len(self.transformer_params)):
-            prev_param = self.transformer_params[i-1]
-            curr_param = self.transformer_params[i]
-            curr_param.in_channels = prev_param.out_channels    
+
+def build_encoder_params(in_channels: int,
+                         depths: List[int],
+                         scales: List[float],
+                         num_global_attention_layers: int,
+                         use_gated_residuals: bool = False,
+                         num_global_attention_heads: int = 16,
+                         global_attention_dropout: float = 0.1):
+    current_in_channels = in_channels
+    transformer_params = []
+    for depth, scale in zip(depths, scales):
+        transformer_params.append(TransformerParams(in_channels=current_in_channels,
+                                                    out_channels=depth,
+                                                    use_gated_residuals=use_gated_residuals,
+                                                    scale_factor=scale))
+        current_in_channels = depth
+    return EncoderParams(transformer_params=transformer_params,
+                         num_global_attention_heads=num_global_attention_heads,
+                         num_global_attention_layers=num_global_attention_layers,
+                         global_attention_dropout=global_attention_dropout)
+
+
+DEFAULT_IMG_ENCODER_PARAMS = build_encoder_params(in_channels=3,
+                                                  depths=[
+                                                      128, 128, 256, 256, 512, 512, 512, 512],
+                                                  scales=[0.5, 1, 0.5,
+                                                          1, 0.5, 1, 0.5, 1],
+                                                  num_global_attention_layers=7)

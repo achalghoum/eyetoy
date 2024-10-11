@@ -3,13 +3,12 @@ from typing import Generic, List, Callable, Type
 
 import torch
 from torch.nn import Module, Conv2d, Conv3d, Parameter, ConvTranspose2d, ConvTranspose3d, \
-    Conv1d
+    Conv1d, Dropout
 
 from generics import ConvType
 from natten.functional import na2d, na3d, na2d_qk, na3d_qk, na2d_av, na3d_av, na1d, na1d_qk, na1d_av
 from params import ConvParams, NeighborhoodAttentionParams
 from positional_encoding import positional_encoding
-
 
 
 class ConvNAT(ABC, Module, Generic[ConvType]):
@@ -23,14 +22,13 @@ class ConvNAT(ABC, Module, Generic[ConvType]):
                  in_channels: int,
                  out_channels: int,
                  intermediate_channels: int,
-                 is_causal: bool = False):
-        super().__init__()
-
-        # Shared Convolutional Layer
-        self.conv = self.conv_type(**conv_params.__dict__,
-                                   in_channels=in_channels,
-                                   out_channels=intermediate_channels)
-
+                 is_causal: bool = False,
+                 dropout:float = 0.1,
+                 **kwargs):
+        super(ConvNAT,self).__init__()
+        self.dropout = Dropout(dropout)
+        # Main Convolutional Layer
+        self.conv = self.conv_type(**conv_params.__dict__)
         # Linear Layers for Q, K, V
         self.q_conv = self.conv_type(kernel_size=1, in_channels=intermediate_channels,
                                      out_channels=intermediate_channels)
@@ -40,9 +38,9 @@ class ConvNAT(ABC, Module, Generic[ConvType]):
                                      out_channels=out_channels)
 
         # Attention Parameters
-        self.dilation = Parameter(torch.tensor(attn_params.min_dilation, dtype=torch.int32),
+        self.dilation = Parameter(torch.tensor(attn_params.min_dilation, dtype=torch.float16),
                                   requires_grad=True)
-        self.kernel_size = Parameter(torch.tensor(attn_params.min_kernel_size, dtype=torch.int32),
+        self.kernel_size = Parameter(torch.tensor(attn_params.min_kernel_size, dtype=torch.float16),
                                      requires_grad=True)
         self.min_dilation = attn_params.min_dilation
         self.max_dilation = attn_params.max_dilation
@@ -51,6 +49,7 @@ class ConvNAT(ABC, Module, Generic[ConvType]):
         self.is_causal = is_causal
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.dropout(x)
         dilation = int(self.get_dilation())
         kernel_size = int(self.get_kernel_size())
 
@@ -73,16 +72,15 @@ class ConvNAT(ABC, Module, Generic[ConvType]):
 
     def get_dilation(self):
         if self.training:
-            return self.dilation.clamp(self.min_dilation, self.max_dilation)
+            return int(self.dilation.clamp(float(self.min_dilation), float(self.max_dilation)))
         else:
-            return self.dilation.item()
+            return int(self.dilation.item())
 
     def get_kernel_size(self):
         if self.training:
-            return self.kernel_size.clamp(self.min_kernel_size, self.max_kernel_size)
+            return int(self.kernel_size.clamp(float(self.min_kernel_size), float(self.max_kernel_size)))
         else:
-            return self.kernel_size.item()
-
+            return int(self.kernel_size.item())
     def nested_attention(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
                          dilation: int, kernel_size: int):
         attn = self.qk_func(query, key, kernel_size=kernel_size, dilation=dilation,

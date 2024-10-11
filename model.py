@@ -5,7 +5,7 @@ import torch
 from torch.nn import Module
 
 from generics import ConvNATTransformerType, TransformerStackType
-from params import TransformerParams
+from params import DEFAULT_IMG_ENCODER_PARAMS, TransformerParams
 from transformer import ConvNATTransformer1D, ConvNATTransformer2D, ConvNATTransformer3D, \
     GlobalAttentionBlock
 
@@ -60,8 +60,8 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
 
     def __init__(self, transformer_params: List[TransformerParams], num_global_attention_heads: int,
                  global_attention_dropout: float, num_global_attention_layers: int):
-        super().__init__()
-        self.transformer_stack = self.transformer_stack_type(**transformer_params.__dict__)
+        super(Encoder,self).__init__()
+        self.transformer_stack = self.transformer_stack_type(transformer_params)
         self.global_attention = GlobalAttentionStack(
             transformer_params[-1].out_channels,
             num_global_attention_heads, num_global_attention_layers,
@@ -74,12 +74,14 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
 
 
 class Encoder1D(Encoder[TransformerStack1D]):
-    transformer_sequence_type = TransformerStack1D
+    transformer_stack_type = TransformerStack1D
 
 
 class Encoder2D(Encoder[TransformerStack2D]):
-    transformer_sequence_type = TransformerStack2D
+    transformer_stack_type = TransformerStack2D
 
 
 class Encoder3D(Encoder[TransformerStack3D]):
-    transformer_sequence_type = TransformerStack3D
+    transformer_stack_type = TransformerStack3D
+
+DEFAULT_IMAGE_ENCODER = Encoder2D(**DEFAULT_IMG_ENCODER_PARAMS.__dict__)

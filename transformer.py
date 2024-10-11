@@ -1,8 +1,9 @@
 from abc import ABC
+from re import M
 from typing import Type, Generic, List, Optional, Tuple
 
 import torch
-from torch import nn
+from torch import dropout, nn
 from torch.nn import Module, Conv2d, Conv3d, Conv1d
 
 from attention import ConvNAT2D, ConvNAT3D, ConvNAT1D
@@ -17,8 +18,9 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
 
     def __init__(self, num_heads: int, head_params: List[HeadParams], in_channels: int,
                  intermediate_channels: int, out_channels: int, final_conv_params: ConvParams,
-                 scale_factor: float):
+                 scale_factor: float,dropout:float=0.1):
         super().__init__()
+        self.dropout = nn.Dropout(dropout)
         self.attention_heads = torch.nn.ModuleList([
             self.conv_attn_type(**head_param.__dict__) for head_param in head_params
         ])
@@ -31,6 +33,7 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Compute output size based on scale factor
+        x = self.dropout(x)
         input_size = x.shape[2:]  # Assuming NCHW or NCDHW format
         output_size = [int(i * self.scale_factor) for i in input_size]
 
@@ -68,14 +71,17 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
     multi_head_attention_type: Type[ConvMultiHeadNATType]
     conv_type: Type[ConvType]
 
-    def __init__(self,in_channels:int, out_channels:int, attention_params: MultiHeadAttentionParams, final_conv_params: ConvParams,
-                 use_gated_residuals: bool = False, gated_residuals_params: Optional[ConvParams] = None, *kwargs):
-        super(Module).__init__()
-        self.multi_head_attention = self.multi_head_attention_type(**attention_params.__dict__)
+    def __init__(self, in_channels: int, out_channels: int, attention_params: MultiHeadAttentionParams, final_conv_params: ConvParams,
+                 use_gated_residuals: bool = False, gated_residuals_params: Optional[ConvParams] = None,dropout:float=0.1, **kwargs):
+        super(ConvNATTransformer,self).__init__()
+        self.dropout = nn.Dropout(dropout)
+        self.multi_head_attention = self.multi_head_attention_type(
+            **attention_params.__dict__)
         self.final_conv = self.conv_type(**final_conv_params.__dict__)
         self.use_gated_residuals = use_gated_residuals
         if use_gated_residuals and gated_residuals_params:
-            self.gated_residuals = self.conv_type(**gated_residuals_params.__dict__)
+            self.gated_residuals = self.conv_type(
+                **gated_residuals_params.__dict__)
         self.layernorm = torch.nn.LayerNorm(out_channels)
 
     def residual(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
@@ -86,6 +92,7 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
             return x + y
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.dropout(x)
         attention_output = self.multi_head_attention(x)
         conv_output = self.final_conv(attention_output)
         residual = self.residual(attention_output, conv_output)
@@ -111,7 +118,7 @@ class GlobalAttentionBlock(Module):
 
     def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1,
                  use_input_context_token: bool = False):
-        super().__init__()
+        super(GlobalAttentionBlock,self).__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.use_input_context_token = use_input_context_token
@@ -122,7 +129,7 @@ class GlobalAttentionBlock(Module):
         self.layernorm = nn.LayerNorm(d_model)
 
     def forward(self, x: torch.Tensor, context_token: Optional[torch.Tensor] = None) -> Tuple[
-        torch.Tensor, torch.Tensor]:
+            torch.Tensor, torch.Tensor]:
         # x shape: (batch_size, channels, height, width) or (batch_size, channels, depth, height, width)
         # context_token shape (if provided): (batch_size, 1, d_model)
         batch_size = x.shape[0]
@@ -131,7 +138,8 @@ class GlobalAttentionBlock(Module):
         # Add positional encoding
         x = x + pe
         # Flatten the spatial dimensions
-        x_flat = x.flatten(2).transpose(1, 2)  # (batch_size, H*W or D*H*W, channels)
+        # (batch_size, H*W or D*H*W, channels)
+        x_flat = x.flatten(2).transpose(1, 2)
 
         # Use input context token or learned parameter
         if self.use_input_context_token:
@@ -152,7 +160,7 @@ class GlobalAttentionBlock(Module):
         if self.use_input_context_token:
             mask[1:, 0] = False  # All tokens can attend to the context token
         else:
-            mask[1:, 0] = True  # Unless we are at the first layer 
+            mask[1:, 0] = True  # Unless we are at the first layer
 
         # Apply self-attention with mask
         attn_output, _ = self.attention(x_with_context, x_with_context, x_with_context,
@@ -166,8 +174,7 @@ class GlobalAttentionBlock(Module):
         feature_map_out = output[:, 1:, :]
 
         # Reshape feature map to original shape
-        feature_map_out = feature_map_out.transpose(1, 2).reshape(original_shape)
+        feature_map_out = feature_map_out.transpose(
+            1, 2).reshape(original_shape)
 
         return feature_map_out, context_token_out
-
-

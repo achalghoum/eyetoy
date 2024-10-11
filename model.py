@@ -85,3 +85,4 @@ class Encoder3D(Encoder[TransformerStack3D]):
     transformer_stack_type = TransformerStack3D
 
 DEFAULT_IMAGE_ENCODER = Encoder2D(**DEFAULT_IMG_ENCODER_PARAMS.__dict__)
+DEFAULT_IMAGE_ENCODER.eval()

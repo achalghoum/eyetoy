@@ -11,9 +11,9 @@ class ConvParams:
     out_channels: Optional[int] = None
     padding: str = "valid"
     bias: bool = True
-    dilation: int = 0
+    dilation: Optional[int] = 1
     stride: int = 1
-    groups: int = 4
+    groups: int = 16
 
     def __post_init__(self):
         self._update_groups()
@@ -28,29 +28,28 @@ class ConvParams:
             if self.in_channels % self.groups != 0 or self.out_channels % self.groups != 0:
                 self.groups = gcd(self.in_channels, self.out_channels)
 
+
 CONV_1X1 = ConvParams(kernel_size=1, stride=1, padding="same", groups=1)
-CONV_4X4 = ConvParams(kernel_size=4, stride=1, padding="same")
-CONV_8X8 = ConvParams(kernel_size=8, stride=2)
-CONV_12X12 = ConvParams(kernel_size=12, stride=6)
-CONV_16X16 = ConvParams(kernel_size=16, stride=16)
+CONV_4X4 = ConvParams(kernel_size=3, stride=1 )
+CONV_8X8 = ConvParams(kernel_size=5, stride=1)
+CONV_12X12 = ConvParams(kernel_size=7, stride=3)
+CONV_16X16 = ConvParams(kernel_size=11, stride=5)
 
 
 @dataclass
 class NeighborhoodAttentionParams:
-    min_kernel_size: int = 5
-    max_kernel_size: int = 17
-    min_dilation: int = 0
-    max_dilation: int = 3
+    attention_window: int = 5
+    attention_stride: int = 3
 
 
 ATTENTION_3X3 = NeighborhoodAttentionParams(
-    min_kernel_size=3, max_kernel_size=5, min_dilation=0, max_dilation=0)
+    attention_window=11,  attention_stride=2)
 ATTENTION_5X5 = NeighborhoodAttentionParams(
-    min_kernel_size=7, max_kernel_size=13, min_dilation=0, max_dilation=2)
+    attention_window=11,  attention_stride=1)
 ATTENTION_11X11 = NeighborhoodAttentionParams(
-    min_kernel_size=11, max_kernel_size=17, min_dilation=0, max_dilation=5)
+    attention_window=15,  attention_stride=1)
 ATTENTION_17X17 = NeighborhoodAttentionParams(
-    min_kernel_size=13, max_kernel_size=19, min_dilation=0, max_dilation=7)
+    attention_window=17,  attention_stride=1)
 
 
 @dataclass
@@ -131,7 +130,6 @@ class MultiHeadAttentionParams:
                 self.final_conv_params.out_channels = self.final_conv_params.out_channels or value
 
 
-
 def get_default_encoder_multihead_attn_params(out_channels):
     head_3x3 = HeadParams(conv_params=deepcopy(
         CONV_4X4), intermediate_channels=out_channels//4, attn_params=deepcopy(ATTENTION_3X3))
@@ -183,8 +181,7 @@ class TransformerParams:
             self.gated_residual_conv_params = ConvParams(kernel_size=1,
                                                          in_channels=self.attention_params.out_channels +
                                                          self.final_conv_params.out_channels,
-                                                         out_channels=1,
-                                                         activation="sigmoid")
+                                                         out_channels=1)
 
     def __setattr__(self, name, value):
         super().__setattr__(name, value)
@@ -199,8 +196,7 @@ class TransformerParams:
                 self.gated_residual_conv_params = ConvParams(kernel_size=1,
                                                              in_channels=self.attention_params.out_channels +
                                                              self.final_conv_params.out_channels,
-                                                             out_channels=1,
-                                                             activation="sigmoid")
+                                                             out_channels=1)
 
 
 @dataclass
@@ -240,7 +236,7 @@ def build_encoder_params(in_channels: int,
 
 DEFAULT_IMG_ENCODER_PARAMS = build_encoder_params(in_channels=3,
                                                   depths=[
-                                                      128, 128, 256, 256, 512, 512, 512, 512],
-                                                  scales=[0.5, 1, 0.5,
-                                                          1, 0.5, 1, 0.5, 1],
-                                                  num_global_attention_layers=7)
+                                                      32,128, 128, 256, 256, 512],
+                                                  scales=[0.5, 0.5,1, 0.5,1, 1],
+                                                  num_global_attention_layers=6,
+                                                  num_global_attention_heads=4)

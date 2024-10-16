@@ -1,6 +1,6 @@
 import unittest
 import torch
-from positional_encoding import compute_positional_encoding, positional_encoding
+from layers.positional_encoding import compute_positional_encoding, positional_encoding
 
 class TestPositionalEncoding(unittest.TestCase):
     def test_compute_positional_encoding_2d(self):

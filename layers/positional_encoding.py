@@ -66,7 +66,7 @@ def compute_positional_encoding(positions, d=8):
     return pe
 
 
-def positional_encoding(input_tensors, d=8):
+def positional_encoding(input_tensors, d=8) -> torch.Tensor:
     """
     Generate positional encodings for a batch of 1D, 2D or 3D input tensors of different sizes.
 

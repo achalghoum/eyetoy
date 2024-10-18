@@ -27,21 +27,28 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
                  intermediate_channels: int, out_channels: int, final_conv_params: ConvParams,
                  scale_factor: float, dropout: float = 0.1):
         super().__init__()
-        self.dropout = nn.Dropout(dropout)
         self.attention_heads = torch.nn.ModuleList([
             self.conv_attn_type(**head_param.__dict__) for head_param in head_params
         ])
         self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__),
-                                        nn.ReLU())
+                                        nn.GELU())
         self.num_heads = num_heads
         self.in_channels = in_channels
         self.intermediate_channels = intermediate_channels
         self.out_channels = out_channels
         self.scale_factor = scale_factor
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Compute output size based on scale factor
-        x = self.dropout(x)
         input_size = x.shape[2:]  # Assuming NCHW or NCDHW format
         output_size = [int(i * self.scale_factor) for i in input_size]
 
@@ -50,7 +57,7 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
         head_outputs = [head(x) for head in self.attention_heads]
 
         # Resize all head outputs to match the scaled input size
-        resized_outputs = [torch.nn.functional.interpolate(output, size=output_size, mode='bilinear')
+        resized_outputs = [torch.nn.functional.interpolate(output, size=output_size, mode='nearest')
                            for output in head_outputs]
 
         # Concatenate head outputs along the channel dimension for each batch
@@ -81,40 +88,40 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
     norm_type: Type[Module]
 
     def __init__(self, in_channels: int, out_channels: int, attention_params: MultiHeadAttentionParams, final_conv_params: ConvParams,
-                 use_gated_residuals: bool = False, gated_residuals_params: Optional[ConvParams] = None, dropout: float = 0.1,scale_factor:Optional[float]=1, **kwargs):
+                  dropout: float = 0.1,scale_factor:Optional[float]=1, **kwargs):
         super(ConvNATTransformer, self).__init__()
-        self.dropout = nn.Dropout(dropout)
         self.multi_head_attention = self.multi_head_attention_type(
             **attention_params.__dict__)
         self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__),
-                                        nn.ReLU())
-        self.use_gated_residuals = use_gated_residuals
-        if use_gated_residuals and gated_residuals_params:
-            self.gated_residuals = nn.Sequential(self.conv_type(
-                **gated_residuals_params.__dict__),
-                nn.Softmax())
+                                        nn.GELU())
+        if in_channels != out_channels:
+            self.use_residual_scale = True
+            self.residual_upscale = self.conv_type(in_channels=in_channels, out_channels=out_channels,kernel_size=1)
+        else:
+            self.use_residual_scale = False
         self.layernorm1 = self.norm_type(out_channels)
         self.layernorm2 = self.norm_type(out_channels)
 
         self.scale_factor=scale_factor or attention_params.scale_factor
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.5)
+
 
     def residual(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        if self.use_gated_residuals:
-            weights = self.gated_residuals(torch.cat([x, y], dim=-1))
-            return (1 - weights) * x + weights * y
-        else:
-            # Handle different channel dimensions using addition list in residual connections
-            if x.shape[1] != y.shape[1]:
-                max_channels = max(x.shape[1], y.shape[1])
-                x_padded = torch.nn.functional.pad(x, (0, 0, 0, 0, 0, max_channels - x.shape[1]))
-                y_padded = torch.nn.functional.pad(y, (0, 0, 0, 0, 0, max_channels - y.shape[1]))
-                return x_padded + y_padded
-            else:
-                return x + y
+        # Handle different channel dimensions using addition list in residual connections
+        if self.use_residual_scale:
+            x = self.residual_upscale(x)
+        return x + y
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        attention_output = self.multi_head_attention(self.dropout(x))
-        rescaled_input = torch.nn.functional.interpolate(x, size=attention_output.shape[2:], mode='bilinear') if self.scale_factor != 1 else x
+        attention_output = self.multi_head_attention(x)
+        rescaled_input = torch.nn.functional.interpolate(x, size=attention_output.shape[2:], mode='nearest') if self.scale_factor != 1 else x
         residual_1 = self.layernorm1(self.residual(rescaled_input,attention_output))
         residual_2 = self.final_conv(residual_1)
         residual = self.layernorm2(residual_2+residual_1)
@@ -149,8 +156,6 @@ class GlobalAttentionBlock(Module):
         self.num_register_tokens = num_register_tokens
         self.use_input_context_token = use_input_context_token
         self.use_input_register_tokens = use_input_register_tokens
-        print(use_input_context_token)
-        print(use_input_register_tokens)
         if not use_input_context_token:
             self.context_token = nn.Parameter(torch.randn(1, 1, d_model))
         if not use_input_register_tokens:
@@ -165,18 +170,25 @@ class GlobalAttentionBlock(Module):
         # Add feed-forward network
         self.ffn = nn.Sequential(
             nn.Linear(d_model, 4 * d_model),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(4 * d_model, d_model)
         )
         
         self.dropout = nn.Dropout(dropout)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Linear)):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.1)
+
 
     def forward(self, x: torch.Tensor, context_token: Optional[torch.Tensor] = None,
                 register_tokens: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size = x.shape[0]
         original_shape = x.shape
-        if not self.use_input_context_token:
-            x = x+ positional_encoding(x,d=self.d_model)
         x_flat = (x).flatten(2).transpose(1, 2)
         if self.use_input_context_token:
             if context_token is None:
@@ -205,7 +217,7 @@ class GlobalAttentionBlock(Module):
         mask[1+self.num_register_tokens:, :1+self.num_register_tokens] = False
         # Other tokens cannot attend to each other
         mask[1+self.num_register_tokens:, 1+self.num_register_tokens:] = True
-        attn_output, _ = self.attention(key=x_w_tokens,query= x_w_tokens, value=x_w_tokens)
+        attn_output, _ = self.attention(key=x_w_tokens,query= x_w_tokens, value=x_w_tokens, attn_mask=mask)
         # Apply first residual connection and layer normalization
         attn_output = self.layernorm1(attn_output + x_w_tokens)
         

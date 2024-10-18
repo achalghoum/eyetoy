@@ -33,7 +33,7 @@ CONV_1X1 = ConvParams(kernel_size=1, stride=1, padding="same", groups=1)
 CONV_4X4 = ConvParams(kernel_size=3, stride=1)
 CONV_8X8 = ConvParams(kernel_size=5, stride=2)
 CONV_12X12 = ConvParams(kernel_size=7, stride=3)
-CONV_16X16 = ConvParams(kernel_size=15, stride=7)
+CONV_16X16 = ConvParams(kernel_size=15, stride=15)
 
 
 @dataclass
@@ -132,13 +132,13 @@ class MultiHeadAttentionParams:
 
 def get_toplevel_encoder_multihead_attn_params(out_channels):
     head_3x3 = HeadParams(conv_params=deepcopy(
-        CONV_4X4), intermediate_channels=out_channels//4, out_channels=out_channels//4,attn_params=deepcopy(ATTENTION_3X3))
+        CONV_4X4), intermediate_channels=out_channels,attn_params=deepcopy(ATTENTION_3X3))
     head_5x5 = HeadParams(conv_params=deepcopy(
-        CONV_8X8), intermediate_channels=out_channels//4, out_channels=out_channels//4,attn_params=deepcopy(ATTENTION_5X5))
+        CONV_8X8), intermediate_channels=out_channels,attn_params=deepcopy(ATTENTION_5X5))
     head_11x11 = HeadParams(conv_params=deepcopy(
-        CONV_12X12), intermediate_channels=out_channels, out_channels=out_channels,attn_params=deepcopy(ATTENTION_11X11))
+        CONV_12X12), intermediate_channels=out_channels,attn_params=deepcopy(ATTENTION_11X11))
     head_17x17 = HeadParams(conv_params=deepcopy(
-        CONV_12X12), intermediate_channels=out_channels, out_channels=out_channels,attn_params=deepcopy(ATTENTION_17X17))
+        CONV_16X16), intermediate_channels=out_channels*2,attn_params=deepcopy(ATTENTION_17X17))
     return MultiHeadAttentionParams(num_heads=4,
                                     head_params=[head_3x3, head_5x5,
                                                  head_11x11, head_17x17],
@@ -146,13 +146,13 @@ def get_toplevel_encoder_multihead_attn_params(out_channels):
 
 def get_deep_encoder_multihead_attn_params(out_channels):
     head_3x3 = HeadParams(conv_params=deepcopy(
-        CONV_4X4), intermediate_channels=out_channels//4, attn_params=deepcopy(ATTENTION_3X3))
+        CONV_4X4), intermediate_channels=out_channels//4, attn_params=deepcopy(ATTENTION_5X5))
     head_5x5 = HeadParams(conv_params=deepcopy(
         CONV_8X8), intermediate_channels=out_channels//4, attn_params=deepcopy(ATTENTION_5X5))
     head_11x11 = HeadParams(conv_params=deepcopy(
-        CONV_8X8), intermediate_channels=out_channels//2, attn_params=deepcopy(ATTENTION_11X11))
+        CONV_8X8), intermediate_channels=out_channels//4, attn_params=deepcopy(ATTENTION_11X11))
     head_17x17 = HeadParams(conv_params=deepcopy(
-        CONV_8X8), intermediate_channels=out_channels//2, attn_params=deepcopy(ATTENTION_17X17))
+        CONV_8X8), intermediate_channels=out_channels//4, attn_params=deepcopy(ATTENTION_11X11))
     return MultiHeadAttentionParams(num_heads=4,
                                     head_params=[head_3x3, head_5x5,
                                                  head_11x11, head_17x17],
@@ -228,7 +228,7 @@ def build_encoder_params(in_channels: int,
     cummulative_scale = 1
     for index,depth, scale in zip(range(len(depths)),depths, scales):
         cummulative_scale *= scale
-        head_builder = get_toplevel_encoder_multihead_attn_params if cummulative_scale == 1 else get_deep_encoder_multihead_attn_params
+        head_builder = get_toplevel_encoder_multihead_attn_params if cummulative_scale >= 0.25 else get_deep_encoder_multihead_attn_params
         transformer_params.append(TransformerParams(in_channels=current_in_channels,
                                                     out_channels=depth,
                                                     scale_factor=scale,
@@ -243,7 +243,7 @@ def build_encoder_params(in_channels: int,
 
 DEFAULT_IMG_ENCODER_PARAMS = build_encoder_params(in_channels=3,
                                                   depths=[
-                                                      128, 128, 512, 512],
+                                                      128, 256, 512, 512],
                                                   scales=[0.5, 0.5,
                                                           0.5, 1],
                                                   num_global_attention_layers=4,

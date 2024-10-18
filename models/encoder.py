@@ -78,11 +78,24 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
             transformer_params[-1].out_channels,
             num_global_attention_heads, num_global_attention_layers,
             global_attention_dropout)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
+                fan = nn.init._calculate_fan_in_and_fan_out(m.weight)[0]
+                nn.init.kaiming_normal_(m.weight, mode='fan_in' if fan > 0 else 'fan_out')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.5)
+            if isinstance(m, (nn.Linear)):
+                nn.init.xavier_normal_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0.5)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.initial_conv(x)
         x= self.norm(x)
-        x = x + positional_encoding(x, d=x.shape[1]) * 0.1
+        x = x + positional_encoding(x, d=x.shape[1]) * 0.5
         transformed_input = self.transformer_stack(x)
         output, context_token = self.global_attention(transformed_input)
         return output, context_token
@@ -131,6 +144,7 @@ class SimplifiedEncoder(ABC, nn.Module, Generic[TransformerStackType]):
                  bilstm_hidden_size: int, bilstm_num_layers: int,
                  bilstm_dropout: float, initial_conv_params: ConvParams):
         super(SimplifiedEncoder, self).__init__()
+        self.norm = nn.GroupNorm(num_channels=initial_conv_params.out_channels,num_groups=32)
         self.initial_conv = nn.Sequential(self.conv_type(**initial_conv_params.__dict__),
                                           nn.ReLU())
 
@@ -142,6 +156,7 @@ class SimplifiedEncoder(ABC, nn.Module, Generic[TransformerStackType]):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.initial_conv(x)
+        x = self.norm(x)
         x = x + positional_encoding(x, d=x.shape[1])
         
         transformed_input = self.transformer_stack(x)

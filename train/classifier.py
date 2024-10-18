@@ -5,7 +5,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from .datasets.loader import caltech_256_train, caltech_256_val
-from models.encoder import DEFAULT_2D_ENCODER, DEFAULT_SIMPLIFIED_2D_ENCODER, Encoder2D, SimplifiedEncoder2D
+from models.encoder import DEFAULT_2D_ENCODER, Encoder2D, SimplifiedEncoder2D
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 import torch.nn.utils as utils
 
@@ -30,7 +30,7 @@ def train_encoder_classifier(model: Union[Encoder2DClassifier,SimplifiedEncoder2
                              device: torch.device, weight_decay=1e-5):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3, verbose=True)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
 
     best_val_loss = float('inf')
     patience = 5
@@ -50,7 +50,7 @@ def train_encoder_classifier(model: Union[Encoder2DClassifier,SimplifiedEncoder2
 
         for batch_idx, (inputs, labels) in enumerate(train_loader):
             inputs, labels = inputs.to(device), labels.to(device)
-
+            model.zero_grad()
             outputs = model(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
@@ -124,7 +124,7 @@ def train_encoder_classifier(model: Union[Encoder2DClassifier,SimplifiedEncoder2
 if __name__ == "__main__":
     # Set up data loaders (you'll need to adjust this based on your dataset)
         
-    train_loader = DataLoader(caltech_256_train, batch_size=16, shuffle=True, num_workers=1)
+    train_loader = DataLoader(caltech_256_train, batch_size=32, shuffle=True, num_workers=1)
     val_loader = DataLoader(caltech_256_val, batch_size=32, shuffle=False, num_workers=1)
     
     # Create the model
@@ -134,6 +134,6 @@ if __name__ == "__main__":
     
     # Train the model
     device = torch.device("cuda")
-    weight_decay = 1e-4  # Adjust this value as needed
+    weight_decay = 1e-3  # Adjust this value as needed
     train_encoder_classifier(model, train_loader, val_loader, num_epochs=10, 
                              learning_rate=1e-3, device=device, weight_decay=weight_decay)

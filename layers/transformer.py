@@ -11,10 +11,12 @@ from params import HeadParams, ConvParams, MultiHeadAttentionParams
 from .positional_encoding import positional_encoding
 from torch.nn import functional as F
 
+
 class LayerNorm2d(nn.LayerNorm):
     def forward(self, x: Tensor) -> Tensor:
         x = x.permute(0, 2, 3, 1)
-        x = F.layer_norm(x, self.normalized_shape, self.weight, self.bias, self.eps)
+        x = F.layer_norm(x, self.normalized_shape,
+                         self.weight, self.bias, self.eps)
         x = x.permute(0, 3, 1, 2)
         return x
 
@@ -37,14 +39,6 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
         self.intermediate_channels = intermediate_channels
         self.out_channels = out_channels
         self.scale_factor = scale_factor
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-                nn.init.kaiming_normal_(m.weight, mode='fan_in')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -57,7 +51,7 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
         head_outputs = [head(x) for head in self.attention_heads]
 
         # Resize all head outputs to match the scaled input size
-        resized_outputs = [torch.nn.functional.interpolate(output, size=output_size, mode='nearest')
+        resized_outputs = [torch.nn.functional.interpolate(output, size=output_size, mode='nearest') if output.shape[2:] != output_size else output
                            for output in head_outputs]
 
         # Concatenate head outputs along the channel dimension for each batch
@@ -88,7 +82,7 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
     norm_type: Type[Module]
 
     def __init__(self, in_channels: int, out_channels: int, attention_params: MultiHeadAttentionParams, final_conv_params: ConvParams,
-                  dropout: float = 0.1,scale_factor:Optional[float]=1, **kwargs):
+                 dropout: float = 0.1, scale_factor: Optional[float] = 1, **kwargs):
         super(ConvNATTransformer, self).__init__()
         self.multi_head_attention = self.multi_head_attention_type(
             **attention_params.__dict__)
@@ -96,22 +90,14 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
                                         nn.GELU())
         if in_channels != out_channels:
             self.use_residual_scale = True
-            self.residual_upscale = self.conv_type(in_channels=in_channels, out_channels=out_channels,kernel_size=1)
+            self.residual_upscale = self.conv_type(
+                in_channels=in_channels, out_channels=out_channels, kernel_size=1)
         else:
             self.use_residual_scale = False
         self.layernorm1 = self.norm_type(out_channels)
         self.layernorm2 = self.norm_type(out_channels)
 
-        self.scale_factor=scale_factor or attention_params.scale_factor
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-                nn.init.kaiming_normal_(m.weight, mode='fan_in')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.5)
-
+        self.scale_factor = scale_factor or attention_params.scale_factor
 
     def residual(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         # Handle different channel dimensions using addition list in residual connections
@@ -121,11 +107,14 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         attention_output = self.multi_head_attention(x)
-        rescaled_input = torch.nn.functional.interpolate(x, size=attention_output.shape[2:], mode='nearest') if self.scale_factor != 1 else x
-        residual_1 = self.layernorm1(self.residual(rescaled_input,attention_output))
+        rescaled_input = torch.nn.functional.interpolate(
+            x, size=attention_output.shape[2:], mode='nearest') if self.scale_factor != 1 else x
+        residual_1 = self.layernorm1(
+            self.residual(rescaled_input, attention_output))
         residual_2 = self.final_conv(residual_1)
         residual = self.layernorm2(residual_2+residual_1)
         return residual
+
 
 class ConvNATTransformer1D(ConvNATTransformer[Conv1d, ConvMultiHeadNAT1D]):
     multi_head_attention_type = ConvMultiHeadNAT1D
@@ -166,24 +155,15 @@ class GlobalAttentionBlock(Module):
                                                batch_first=True)
         self.layernorm1 = nn.LayerNorm(d_model)
         self.layernorm2 = nn.LayerNorm(d_model)
-        
+
         # Add feed-forward network
         self.ffn = nn.Sequential(
             nn.Linear(d_model, 4 * d_model),
             nn.GELU(),
             nn.Linear(4 * d_model, d_model)
         )
-        
+
         self.dropout = nn.Dropout(dropout)
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, (nn.Linear)):
-                nn.init.xavier_normal_(m.weight)
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0.1)
-
 
     def forward(self, x: torch.Tensor, context_token: Optional[torch.Tensor] = None,
                 register_tokens: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -204,10 +184,10 @@ class GlobalAttentionBlock(Module):
         tokens = torch.cat(
             [context_token, register_tokens], dim=1)
         if not self.use_input_context_token:
-            tokens = tokens + positional_encoding(tokens,d=self.d_model)
+            tokens = tokens + positional_encoding(tokens, d=self.d_model)
         x_w_tokens = torch.cat(
             [tokens, x_flat], dim=1)
-        
+
         seq_len = x_w_tokens.size(1)
         mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device)
         mask[0, :] = False  # Context token can attend to all tokens
@@ -217,14 +197,15 @@ class GlobalAttentionBlock(Module):
         mask[1+self.num_register_tokens:, :1+self.num_register_tokens] = False
         # Other tokens cannot attend to each other
         mask[1+self.num_register_tokens:, 1+self.num_register_tokens:] = True
-        attn_output, _ = self.attention(key=x_w_tokens,query= x_w_tokens, value=x_w_tokens, attn_mask=mask)
+        attn_output, _ = self.attention(
+            key=x_w_tokens, query=x_w_tokens, value=x_w_tokens, attn_mask=mask)
         # Apply first residual connection and layer normalization
         attn_output = self.layernorm1(attn_output + x_w_tokens)
-        
+
         # Apply feed-forward network
         ffn_output = self.ffn(attn_output)
         ffn_output = self.dropout(ffn_output)
-        
+
         # Apply second residual connection and layer normalization
         output = self.layernorm2(ffn_output + attn_output)
 

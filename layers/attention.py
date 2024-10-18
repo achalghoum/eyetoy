@@ -48,20 +48,9 @@ class ConvNAT(ABC, Module, Generic[ConvType]):
         self.v_conv = Sequential(
             self.conv_type(kernel_size=1, in_channels=intermediate_channels, out_channels=intermediate_channels),
         )
-        # Initialize weights
-        self.out_proj = self.conv_type(kernel_size=1, in_channels=intermediate_channels, out_channels=out_channels)
-        # Fixed Attention Parameters
         self.attention_window = attn_params.attention_window
         self.attention_stride = attn_params.attention_stride
         self.is_causal = is_causal
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-                nn.init.kaiming_normal_(m.weight, mode='fan_in')
-                if m.bias is not None:
-                    nn.init.constant_(m.bias, 0)
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared Convolutional Features
         normed_x = self.norm(x)

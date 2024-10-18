@@ -18,11 +18,6 @@ Convolutional Neighborhood Attention (ConvNAT) is a novel approach that integrat
 
 5. **Simplified Encoder**: A simplified version of the encoder is provided for ease of use, allowing users to quickly set up and experiment with ConvNAT without delving into the complexities of the full architecture.
 
-## Installation
-
-To install the necessary dependencies, you can use pip:
-
-```
 ### Custom Configuration
 
 You can customize the parameters of the ConvNAT model by modifying the `DEFAULT_IMG_ENCODER_PARAMS` or by creating your own parameter dictionary.

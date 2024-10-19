@@ -194,9 +194,9 @@ class GlobalAttentionBlock(Module):
         # Register tokens can attend to all tokens
         mask[1:1+self.num_register_tokens, :] = False
         # All tokens can attend to context and register tokens
-        mask[1+self.num_register_tokens:, :1+self.num_register_tokens] = False
+        mask[1+self.num_register_tokens:, :1+self.num_register_tokens] = not self.use_input_context_token
         # Other tokens cannot attend to each other
-        mask[1+self.num_register_tokens:, 1+self.num_register_tokens:] = True
+        mask[1+self.num_register_tokens:, 1+self.num_register_tokens:] = self.use_input_context_token
         attn_output, _ = self.attention(
             key=x_w_tokens, query=x_w_tokens, value=x_w_tokens, attn_mask=mask)
         # Apply first residual connection and layer normalization

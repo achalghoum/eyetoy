@@ -1,25 +1,26 @@
-from abc import ABC
 import math
+from abc import ABC
 from typing import Generic, List, Callable, Optional, Type
 
-import torch
-from torch.nn import Module, Conv2d, Conv3d, Parameter, ConvTranspose2d, ConvTranspose3d, \
-    Conv1d, Dropout, Sequential, ELU, BatchNorm1d, BatchNorm2d, BatchNorm3d
-
-from generics import ConvType
-from natten.functional import na2d, na3d, na2d_qk, na3d_qk, na2d_av, na3d_av, na1d, na1d_qk, na1d_av
-from params import ConvParams, NeighborhoodAttentionParams
-from .positional_encoding import  positional_encoding
 import natten
+import torch
+from natten.functional import na2d, na3d, na2d_qk, na3d_qk, na2d_av, na3d_av, na1d, na1d_qk, na1d_av
 from torch import nn
+from torch.nn import Module, Conv2d, Conv3d, ConvTranspose2d, ConvTranspose3d, \
+    Conv1d, Dropout, Sequential, BatchNorm1d, BatchNorm2d, BatchNorm3d
+
+from generics import ConvType, ConvNATType
+from params import ConvParams, NeighborhoodAttentionParams, HeadParams
+
 natten.use_fused_na()
+
 
 class ConvNAT(ABC, Module, Generic[ConvType]):
     conv_type: Type[ConvType]
     atten_func: Callable
     qk_func: Callable
     v_func: Callable
-    rpb_fn : Optional[Callable] = None
+    rpb_fn: Optional[Callable] = None
 
     def __init__(self, conv_params: ConvParams,
                  attn_params: NeighborhoodAttentionParams,
@@ -32,25 +33,26 @@ class ConvNAT(ABC, Module, Generic[ConvType]):
         super(ConvNAT, self).__init__()
         self.dropout = Dropout(dropout)
         self.scale = math.sqrt(intermediate_channels)
-        self.norm = nn.GroupNorm(num_channels=in_channels,num_groups=16)
+        self.norm = nn.GroupNorm(num_channels=in_channels, num_groups=16)
         # Main Convolutional Layer
         self.conv = Sequential(
             self.conv_type(**conv_params.__dict__),
-            ELU()
+            nn.GELU()
         )
         # Linear Layers for Q, K, V
-        self.q_conv = Sequential(
-            self.conv_type(kernel_size=1, in_channels=intermediate_channels, out_channels=intermediate_channels),
-        )
-        self.k_conv = Sequential(
-            self.conv_type(kernel_size=1, in_channels=intermediate_channels, out_channels=intermediate_channels),
-        )
-        self.v_conv = Sequential(
-            self.conv_type(kernel_size=1, in_channels=intermediate_channels, out_channels=intermediate_channels),
-        )
+        self.q_conv = self.conv_type(kernel_size=1, in_channels=intermediate_channels,
+                                     out_channels=intermediate_channels)
+
+        self.k_conv = self.conv_type(kernel_size=1, in_channels=intermediate_channels,
+                                     out_channels=intermediate_channels)
+
+        self.v_conv = self.conv_type(kernel_size=1, in_channels=intermediate_channels,
+                                     out_channels=intermediate_channels)
+
         self.attention_window = attn_params.attention_window
         self.attention_stride = attn_params.attention_stride
         self.is_causal = is_causal
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared Convolutional Features
         normed_x = self.norm(x)
@@ -64,13 +66,13 @@ class ConvNAT(ABC, Module, Generic[ConvType]):
         query = self.transform_to_nhw1c(query)
         key = self.transform_to_nhw1c(key)
         value = self.transform_to_nhw1c(value)
-        kernel_size = min(self.attention_window,*shared_features.shape[2:])
+        kernel_size = min(self.attention_window, *shared_features.shape[2:])
         kernel_size -= 1 if kernel_size % 2 == 0 else 0
 
-        output = self.atten_func(query=query, key=key, value=value, kernel_size=kernel_size, dilation=self.attention_stride,
-                               is_causal=self.is_causal, scale= self.scale)
+        output = self.atten_func(query=query, key=key, value=value, kernel_size=kernel_size,
+                                 dilation=self.attention_stride,
+                                 is_causal=self.is_causal, scale=self.scale)
         return self.transform_from_nhw1c(output)
-
 
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
         # Check if input is 3D, 4D, or 5D (1D, 2D, or 3D data)
@@ -94,12 +96,14 @@ class ConvNAT(ABC, Module, Generic[ConvType]):
         else:
             raise ValueError(f"Unsupported input dimension: {x.dim()}")
 
+
 class ConvNAT1D(ConvNAT[Conv1d]):
     conv_type = Conv1d
     atten_func = staticmethod(na1d)
     qk_func = staticmethod(na1d_qk)
     v_func = staticmethod(na1d_av)
     norm_type = BatchNorm1d
+
 
 class ConvNAT2D(ConvNAT[Conv2d]):
     conv_type = Conv2d
@@ -108,12 +112,14 @@ class ConvNAT2D(ConvNAT[Conv2d]):
     v_func = staticmethod(na2d_av)
     norm_type = BatchNorm2d
 
+
 class ConvNAT3D(ConvNAT[Conv3d]):
     conv_type = Conv3d
     atten_func = staticmethod(na3d)
     qk_func = staticmethod(na3d_qk)
     v_func = staticmethod(na3d_av)
     norm_type = BatchNorm3d
+
 
 class ConvNAT2DTransposed(ConvNAT[ConvTranspose2d]):
     conv_type = ConvTranspose2d
@@ -127,3 +133,59 @@ class ConvNAT3DTransposed(ConvNAT[ConvTranspose3d]):
     atten_func = staticmethod(na3d)
     qk_func = staticmethod(na3d_qk)
     v_func = staticmethod(na3d_av)
+
+
+class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
+    conv_attn_type: Type[ConvNATType]
+    conv_type: Type[ConvType]
+
+    def __init__(self, num_heads: int, head_params: List[HeadParams], in_channels: int,
+                 intermediate_channels: int, out_channels: int, final_conv_params: ConvParams,
+                 scale_factor: float, dropout: float = 0.1):
+        super().__init__()
+        self.attention_heads = torch.nn.ModuleList([
+            self.conv_attn_type(**head_param.__dict__) for head_param in head_params
+        ])
+        self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__),
+                                        nn.GELU())
+        self.num_heads = num_heads
+        self.in_channels = in_channels
+        self.intermediate_channels = intermediate_channels
+        self.out_channels = out_channels
+        self.scale_factor = scale_factor
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Compute output size based on scale factor
+        input_size = x.shape[2:]  # Assuming NCHW or NCDHW format
+        output_size = [int(i * self.scale_factor) for i in input_size]
+
+        # Process all heads for all batches
+        batch_size = x.shape[0]
+        head_outputs = [head(x) for head in self.attention_heads]
+
+        # Resize all head outputs to match the scaled input size
+        resized_outputs = [torch.nn.functional.interpolate(output, size=output_size,
+                                                           mode='nearest') if output.shape[
+                                                                              2:] != output_size else output
+                           for output in head_outputs]
+
+        # Concatenate head outputs along the channel dimension for each batch
+        combined_output = torch.cat(resized_outputs, dim=1)
+
+        # Apply final convolution
+        return self.final_conv(combined_output)
+
+
+class ConvMultiHeadNAT1D(ConvMultiHeadNAT[Conv1d, ConvNAT1D]):
+    conv_attn_type = ConvNAT1D
+    conv_type = Conv1d
+
+
+class ConvMultiHeadNAT2D(ConvMultiHeadNAT[Conv2d, ConvNAT2D]):
+    conv_attn_type = ConvNAT2D
+    conv_type = Conv2d
+
+
+class ConvMultiHeadNAT3D(ConvMultiHeadNAT[Conv3d, ConvNAT3D]):
+    conv_attn_type = ConvNAT3D
+    conv_type = Conv3d

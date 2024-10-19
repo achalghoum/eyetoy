@@ -125,8 +125,8 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
 if __name__ == "__main__":
     # Set up data loaders (you'll need to adjust this based on your dataset)
         
-    train_loader = DataLoader(caltech_256_train, batch_size=8, shuffle=True, num_workers=1)
-    val_loader = DataLoader(caltech_256_val, batch_size=8, shuffle=False, num_workers=1)
+    train_loader = DataLoader(caltech_256_train, batch_size=16, shuffle=True, num_workers=1)
+    val_loader = DataLoader(caltech_256_val, batch_size=16, shuffle=False, num_workers=1)
     
     # Create the model
     encoder = DEFAULT_2D_ENCODER

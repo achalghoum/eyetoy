@@ -1,6 +1,6 @@
-import torch
 import math
-from torch.nn.utils.rnn import pad_sequence
+
+import torch
 
 
 def compute_positional_encoding(positions, d=8):
@@ -35,9 +35,10 @@ def compute_positional_encoding(positions, d=8):
 
         # Iterate over the spatial dimension
         pos = positions[0].unsqueeze(-1)  # Shape: (batch_size, length, 1)
-        div_term = torch.exp(torch.arange(0, d, 2, device=positions[0].device) * -(math.log(10000.0) / d))
+        div_term = torch.exp(
+            torch.arange(0, d, 2, device=positions[0].device) * -(math.log(10000.0) / d))
         div_term = div_term.view(1, 1, -1)  # Shape: (1, 1, d//2)
-        
+
         pe[:, :, 0::2] = torch.sin(pos * div_term)
         pe[:, :, 1::2] = torch.cos(pos * div_term)
 
@@ -53,7 +54,8 @@ def compute_positional_encoding(positions, d=8):
                 pe[:, dim_idx * d_per_dim + 2 * i + 1, :, :] = torch.cos(pos / div_term)
 
     elif num_dims == 3:  # 3D Encoding
-        batch_size, depth, height, width = positions[0].shape[0], positions[0].shape[2], positions[0].shape[3], positions[0].shape[4]
+        batch_size, depth, height, width = positions[0].shape[0], positions[0].shape[2], \
+        positions[0].shape[3], positions[0].shape[4]
         pe = torch.zeros(batch_size, d, depth, height, width, device=positions[0].device)
 
         # Iterate over each spatial dimension (x, y, z)
@@ -88,7 +90,8 @@ def positional_encoding(input_tensors, d=8) -> torch.Tensor:
         length = input_tensors.shape[1]
 
         # Create a sequence of positions for 1D
-        position = torch.arange(length, device=input_tensors.device).unsqueeze(0).repeat(batch_size, 1)  # Shape: (batch_size, length)
+        position = torch.arange(length, device=input_tensors.device).unsqueeze(0).repeat(batch_size,
+                                                                                         1)  # Shape: (batch_size, length)
 
         pe = compute_positional_encoding((position,), d)
 
@@ -96,22 +99,30 @@ def positional_encoding(input_tensors, d=8) -> torch.Tensor:
         height, width = input_tensors.shape[2], input_tensors.shape[3]
 
         # Create a grid of coordinates for 2D
-        y_position = torch.arange(height, device=input_tensors.device).unsqueeze(1).repeat(1, width)  # Shape: (height, width)
-        x_position = torch.arange(width, device=input_tensors.device).unsqueeze(0).repeat(height, 1)  # Shape: (height, width)
+        y_position = torch.arange(height, device=input_tensors.device).unsqueeze(1).repeat(1,
+                                                                                           width)  # Shape: (height, width)
+        x_position = torch.arange(width, device=input_tensors.device).unsqueeze(0).repeat(height,
+                                                                                          1)  # Shape: (height, width)
 
         # Expand to batch size
-        x_position = x_position.unsqueeze(0).repeat(batch_size, 1, 1)  # Shape: (batch_size, height, width)
-        y_position = y_position.unsqueeze(0).repeat(batch_size, 1, 1)  # Shape: (batch_size, height, width)
+        x_position = x_position.unsqueeze(0).repeat(batch_size, 1,
+                                                    1)  # Shape: (batch_size, height, width)
+        y_position = y_position.unsqueeze(0).repeat(batch_size, 1,
+                                                    1)  # Shape: (batch_size, height, width)
 
         pe = compute_positional_encoding((x_position, y_position), d)
 
     elif input_tensors.ndim == 5:  # 3D Tensor: (batch_size, channels, depth, height, width)
-        depth, height, width = input_tensors.shape[2], input_tensors.shape[3], input_tensors.shape[4]
+        depth, height, width = input_tensors.shape[2], input_tensors.shape[3], input_tensors.shape[
+            4]
 
         # Create grids of coordinates for 3D
-        z_position = torch.arange(depth, device=input_tensors.device).view(1, depth, 1, 1).repeat(batch_size, 1, height, width)  # Shape: (batch_size, depth, height, width)
-        y_position = torch.arange(height, device=input_tensors.device).view(1, 1, height, 1).repeat(batch_size, depth, 1, width)  # Shape: (batch_size, depth, height, width)
-        x_position = torch.arange(width, device=input_tensors.device).view(1, 1, 1, width).repeat(batch_size, depth, height, 1)  # Shape: (batch_size, depth, height, width)
+        z_position = torch.arange(depth, device=input_tensors.device).view(1, depth, 1, 1).repeat(
+            batch_size, 1, height, width)  # Shape: (batch_size, depth, height, width)
+        y_position = torch.arange(height, device=input_tensors.device).view(1, 1, height, 1).repeat(
+            batch_size, depth, 1, width)  # Shape: (batch_size, depth, height, width)
+        x_position = torch.arange(width, device=input_tensors.device).view(1, 1, 1, width).repeat(
+            batch_size, depth, height, 1)  # Shape: (batch_size, depth, height, width)
 
         pe = compute_positional_encoding((x_position, y_position, z_position), d)
 
@@ -144,7 +155,8 @@ def nested_positional_encoding(nested_tensors, d=8):
                 length = tensor.shape[1]
 
                 # Create a sequence of positions for 1D
-                position = torch.arange(length, device=tensor.device).unsqueeze(0)  # Shape: (1, length)
+                position = torch.arange(length, device=tensor.device).unsqueeze(
+                    0)  # Shape: (1, length)
 
                 pe = compute_positional_encoding((position,), d)
                 batch_encodings.append(pe.squeeze(0))
@@ -153,21 +165,29 @@ def nested_positional_encoding(nested_tensors, d=8):
                 height, width = tensor.shape[1], tensor.shape[2]
 
                 # Create a grid of coordinates for 2D
-                y_position = torch.arange(height, device=tensor.device).unsqueeze(1).repeat(1, width)  # Shape: (height, width)
-                x_position = torch.arange(width, device=tensor.device).unsqueeze(0).repeat(height, 1)  # Shape: (height, width)
+                y_position = torch.arange(height, device=tensor.device).unsqueeze(1).repeat(1,
+                                                                                            width)  # Shape: (height, width)
+                x_position = torch.arange(width, device=tensor.device).unsqueeze(0).repeat(height,
+                                                                                           1)  # Shape: (height, width)
 
-                pe = compute_positional_encoding((x_position.unsqueeze(0), y_position.unsqueeze(0)), d)
+                pe = compute_positional_encoding((x_position.unsqueeze(0), y_position.unsqueeze(0)),
+                                                 d)
                 batch_encodings.append(pe.squeeze(0))
 
             elif tensor.ndim == 4:  # 3D Tensor: (channels, depth, height, width)
                 depth, height, width = tensor.shape[1], tensor.shape[2], tensor.shape[3]
 
                 # Create grids of coordinates for 3D
-                z_position = torch.arange(depth, device=tensor.device).view(depth, 1, 1).repeat(1, height, width)  # Shape: (depth, height, width)
-                y_position = torch.arange(height, device=tensor.device).view(1, height, 1).repeat(depth, 1, width)  # Shape: (depth, height, width)
-                x_position = torch.arange(width, device=tensor.device).view(1, 1, width).repeat(depth, height, 1)  # Shape: (depth, height, width)
+                z_position = torch.arange(depth, device=tensor.device).view(depth, 1, 1).repeat(1,
+                                                                                                height,
+                                                                                                width)  # Shape: (depth, height, width)
+                y_position = torch.arange(height, device=tensor.device).view(1, height, 1).repeat(
+                    depth, 1, width)  # Shape: (depth, height, width)
+                x_position = torch.arange(width, device=tensor.device).view(1, 1, width).repeat(
+                    depth, height, 1)  # Shape: (depth, height, width)
 
-                pe = compute_positional_encoding((x_position.unsqueeze(0), y_position.unsqueeze(0), z_position.unsqueeze(0)), d)
+                pe = compute_positional_encoding(
+                    (x_position.unsqueeze(0), y_position.unsqueeze(0), z_position.unsqueeze(0)), d)
                 batch_encodings.append(pe.squeeze(0))
 
             else:

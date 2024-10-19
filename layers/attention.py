@@ -146,6 +146,9 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
         self.attention_heads = torch.nn.ModuleList([
             self.conv_attn_type(**head_param.__dict__) for head_param in head_params
         ])
+        final_conv_params.stride = 1//scale_factor
+        final_conv_params.padding = int((final_conv_params.kernel_size - final_conv_params.stride) // 2)
+
         self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__),
                                         nn.GELU())
         self.num_heads = num_heads
@@ -157,16 +160,14 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Compute output size based on scale factor
         input_size = x.shape[2:]  # Assuming NCHW or NCDHW format
-        output_size = [int(i * self.scale_factor) for i in input_size]
 
         # Process all heads for all batches
-        batch_size = x.shape[0]
         head_outputs = [head(x) for head in self.attention_heads]
 
         # Resize all head outputs to match the scaled input size
-        resized_outputs = [torch.nn.functional.interpolate(output, size=output_size,
-                                                           mode='nearest') if output.shape[
-                                                                              2:] != output_size else output
+        resized_outputs = [torch.nn.functional.interpolate(output, size=input_size,
+                                                           mode='nearest') if x.shape[
+                                                                              2:] != input_size else output
                            for output in head_outputs]
 
         # Concatenate head outputs along the channel dimension for each batch

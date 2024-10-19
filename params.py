@@ -1,7 +1,7 @@
 from copy import deepcopy
 from dataclasses import dataclass
 from math import gcd
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Union
 
 
 @dataclass
@@ -9,7 +9,7 @@ class ConvParams:
     kernel_size: int
     in_channels: Optional[int] = None
     out_channels: Optional[int] = None
-    padding: str = "valid"
+    padding: Union[str,int] = "valid"
     bias: bool = True
     dilation: Optional[int] = 1
     stride: int = 1
@@ -30,11 +30,12 @@ class ConvParams:
 
 
 CONV_1X1 = ConvParams(kernel_size=1, stride=1, padding="same", groups=1)
-CONV_3X3 = ConvParams(kernel_size=3, stride=1, padding="same")
-CONV_5X5 = ConvParams(kernel_size=5, stride=2)
-CONV_7X7 = ConvParams(kernel_size=7, stride=3)
+CONV_3X3 = ConvParams(kernel_size=3, stride=3)
+CONV_5X5 = ConvParams(kernel_size=5, stride=5)
+CONV_7X7 = ConvParams(kernel_size=7, stride=7)
 CONV_9X9 = ConvParams(kernel_size=9, stride=9)
 
+CONV_3X3_SAME = ConvParams(kernel_size=3, stride=1, padding="same")
 CONV_5X5_SAME = ConvParams(kernel_size=5, stride=1, padding="same")
 CONV_7X7_SAME = ConvParams(kernel_size=7, stride=1, padding="same")
 CONV_9X9_SAME = ConvParams(kernel_size=9, stride=1, padding="same")
@@ -229,7 +230,7 @@ def build_encoder_params(in_channels: int, depths: List[int], scales: List[float
     cummulative_scale = 1
     for index, depth, scale in zip(range(len(depths)), depths, scales):
         cummulative_scale *= scale
-        head_builder = get_toplevel_encoder_multihead_attn_params if cummulative_scale >= 0.25 else get_deep_encoder_multihead_attn_params
+        head_builder = get_toplevel_encoder_multihead_attn_params if cummulative_scale >= 0.125 else get_deep_encoder_multihead_attn_params
         transformer_params.append(
             TransformerParams(in_channels=current_in_channels, out_channels=depth,
                               scale_factor=scale, head_builder=head_builder))
@@ -242,6 +243,6 @@ def build_encoder_params(in_channels: int, depths: List[int], scales: List[float
 
 
 DEFAULT_IMG_ENCODER_PARAMS = build_encoder_params(in_channels=3,
-                                                  depths=[32, 64, 128, 128, 256, 256, 512, 512],
+                                                  depths=[32, 64, 128, 128, 512, 512, 768, 768],
                                                   scales=[0.5, 0.5, 1, 1, 1, 0.5, 1],
                                                   num_global_attention_layers=8)

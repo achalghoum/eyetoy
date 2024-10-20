@@ -11,7 +11,7 @@ class Encoder2DClassifier(nn.Module):
     def __init__(self, encoder: Encoder2D, num_classes: int, dropout_rate: float = 0.5):
         super().__init__()
         self.encoder = encoder
-        context_token_dim = encoder.global_attention.d_model
+        context_token_dim = encoder.d_model
         self.dropout = nn.Dropout(dropout_rate)
         self.classifier = nn.Linear(context_token_dim, num_classes)
         nn.init.xavier_uniform_(self.classifier.weight)

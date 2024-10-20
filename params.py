@@ -86,7 +86,7 @@ class MultiHeadAttentionParams:
     num_heads: int
     head_params: List[HeadParams]
     final_conv_params: ConvParams
-    scale_factor: float = 1
+    scale_factor: int = 1
     intermediate_channels: Optional[int] = None
     in_channels: Optional[int] = None
     out_channels: Optional[int] = None
@@ -131,36 +131,40 @@ class MultiHeadAttentionParams:
 
 
 def get_toplevel_encoder_multihead_attn_params(out_channels):
-    head_3x3 = HeadParams(conv_params=deepcopy(CONV_3X3), intermediate_channels=out_channels,
+    if out_channels > 32 :
+        factor = 8
+    else:
+        factor = 2
+    head_3x3 = HeadParams(conv_params=deepcopy(CONV_3X3), intermediate_channels=out_channels//factor,
                           attn_params=deepcopy(ATTENTION_5X5))
-    head_5x5 = HeadParams(conv_params=deepcopy(CONV_5X5), intermediate_channels=out_channels,
+    head_5x5 = HeadParams(conv_params=deepcopy(CONV_5X5), intermediate_channels=out_channels//factor,
                           attn_params=deepcopy(ATTENTION_11X11))
-    head_7x7 = HeadParams(conv_params=deepcopy(CONV_7X7), intermediate_channels=out_channels,
+    head_7x7 = HeadParams(conv_params=deepcopy(CONV_7X7), intermediate_channels=out_channels//factor,
                           attn_params=deepcopy(ATTENTION_13X13))
-    head_9x9 = HeadParams(conv_params=deepcopy(CONV_9X9), intermediate_channels=out_channels,
+    head_9x9 = HeadParams(conv_params=deepcopy(CONV_9X9), intermediate_channels=out_channels//factor,
                           attn_params=deepcopy(ATTENTION_17X17))
     return MultiHeadAttentionParams(num_heads=8,
                                     head_params=[head_3x3, head_3x3, head_5x5, head_5x5, head_7x7,
                                                  head_7x7, head_9x9, head_9x9],
-                                    final_conv_params=deepcopy(CONV_1X1))
+                                    final_conv_params=deepcopy(CONV_3X3))
 
 
 def get_deep_encoder_multihead_attn_params(out_channels):
-    head_3x3 = HeadParams(conv_params=deepcopy(CONV_3X3), intermediate_channels=out_channels // 8,
+    head_3x3_1 = HeadParams(conv_params=deepcopy(CONV_3X3_SAME), intermediate_channels=out_channels // 8,
                           attn_params=deepcopy(ATTENTION_5X5))
-    head_5x5 = HeadParams(conv_params=deepcopy(CONV_5X5_SAME),
+    head_3x3_2 = HeadParams(conv_params=deepcopy(CONV_3X3_SAME),
                           intermediate_channels=out_channels // 8,
                           attn_params=deepcopy(ATTENTION_11X11))
-    head_7x7 = HeadParams(conv_params=deepcopy(CONV_7X7_SAME),
+    head_5x5_1 = HeadParams(conv_params=deepcopy(CONV_5X5_SAME),
                           intermediate_channels=out_channels // 8,
                           attn_params=deepcopy(ATTENTION_13X13))
-    head_9x9 = HeadParams(conv_params=deepcopy(CONV_9X9_SAME),
+    head_5x5_2 = HeadParams(conv_params=deepcopy(CONV_5X5_SAME),
                           intermediate_channels=out_channels // 8,
                           attn_params=deepcopy(ATTENTION_17X17))
     return MultiHeadAttentionParams(num_heads=8,
-                                    head_params=[head_3x3, head_3x3, head_5x5, head_5x5, head_7x7,
-                                                 head_7x7, head_9x9, head_9x9],
-                                    final_conv_params=deepcopy(CONV_1X1))
+                                    head_params=[head_3x3_1, head_3x3_1, head_3x3_2, head_3x3_2, head_5x5_1,
+                                                 head_5x5_1, head_5x5_2, head_5x5_2],
+                                    final_conv_params=deepcopy(CONV_3X3))
 
 
 @dataclass
@@ -170,7 +174,7 @@ class TransformerParams:
     attention_params: Optional[MultiHeadAttentionParams] = None
     gated_residuals_params: Optional[ConvParams] = None
     final_conv_params: Optional[ConvParams] = None
-    scale_factor: float = 1
+    scale_factor: int = 1
     head_builder: Callable[
         [int], MultiHeadAttentionParams] = get_toplevel_encoder_multihead_attn_params
 
@@ -230,7 +234,7 @@ def build_encoder_params(in_channels: int, depths: List[int], scales: List[float
     cummulative_scale = 1
     for index, depth, scale in zip(range(len(depths)), depths, scales):
         cummulative_scale *= scale
-        head_builder = get_toplevel_encoder_multihead_attn_params if cummulative_scale >= 0.125 else get_deep_encoder_multihead_attn_params
+        head_builder = get_toplevel_encoder_multihead_attn_params if cummulative_scale <= 4 else get_deep_encoder_multihead_attn_params
         transformer_params.append(
             TransformerParams(in_channels=current_in_channels, out_channels=depth,
                               scale_factor=scale, head_builder=head_builder))
@@ -243,6 +247,6 @@ def build_encoder_params(in_channels: int, depths: List[int], scales: List[float
 
 
 DEFAULT_IMG_ENCODER_PARAMS = build_encoder_params(in_channels=3,
-                                                  depths=[32, 64, 128, 128, 512, 512, 768, 768],
-                                                  scales=[0.5, 0.5, 1, 1, 1, 0.5, 1],
-                                                  num_global_attention_layers=8)
+                                                  depths=[32, 32,32, 384, 768, 768],
+                                                  scales=[1, 1, 1, 4, 4, 1],
+                                                  num_global_attention_layers=4)

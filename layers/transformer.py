@@ -1,3 +1,4 @@
+import math
 from abc import ABC
 from typing import Type, Generic, Optional, Tuple
 
@@ -34,29 +35,24 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
             **attention_params.__dict__)
         self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__),
                                         nn.GELU())
-        if in_channels != out_channels:
-            self.use_residual_scale = True
-            self.residual_upscale = self.conv_type(
-                in_channels=in_channels, out_channels=out_channels, kernel_size=1)
-        else:
-            self.use_residual_scale = False
+        self.scale_factor = scale_factor or attention_params.scale_factor
+        padding = math.ceil(
+        float(3 - self.scale_factor) / 2.0)
+        self.residual_upscale = self.conv_type(
+            in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=self.scale_factor, padding=padding)
         self.layernorm1 = self.norm_type(out_channels)
         self.layernorm2 = self.norm_type(out_channels)
 
-        self.scale_factor = scale_factor or attention_params.scale_factor
 
     def residual(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         # Handle different channel dimensions using addition list in residual connections
-        if self.use_residual_scale:
-            x = self.residual_upscale(x)
+        x = self.residual_upscale(x)
         return x + y
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         attention_output = self.multi_head_attention(x)
-        rescaled_input = torch.nn.functional.interpolate(
-            x, size=attention_output.shape[2:], mode='nearest') if self.scale_factor != 1 else x
         residual_1 = self.layernorm1(
-            self.residual(rescaled_input, attention_output))
+            self.residual(x, attention_output))
         residual_2 = self.final_conv(residual_1)
         residual = self.layernorm2(residual_2 + residual_1)
         return residual
@@ -80,12 +76,12 @@ class ConvNATTransformer3D(ConvNATTransformer[Conv3d, ConvMultiHeadNAT3D]):
     norm_type = InstanceNorm3d
 
 
-class GlobalAttentionBlock(Module):
+class GlobalAttentionTransformer(Module):
 
     def __init__(self, d_model: int, num_heads: int, num_register_tokens: int = 4,
                  dropout: float = 0.1, use_input_context_token: bool = False,
                  use_input_register_tokens: bool = False):
-        super(GlobalAttentionBlock, self).__init__()
+        super(GlobalAttentionTransformer, self).__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_register_tokens = num_register_tokens

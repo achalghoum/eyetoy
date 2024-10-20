@@ -141,21 +141,20 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
 
     def __init__(self, num_heads: int, head_params: List[HeadParams], in_channels: int,
                  intermediate_channels: int, out_channels: int, final_conv_params: ConvParams,
-                 scale_factor: float, dropout: float = 0.1):
+                 scale_factor: int, dropout: float = 0.1):
         super().__init__()
         self.attention_heads = torch.nn.ModuleList([
             self.conv_attn_type(**head_param.__dict__) for head_param in head_params
         ])
-        final_conv_params.stride = 1//scale_factor
-        final_conv_params.padding = int((final_conv_params.kernel_size - final_conv_params.stride) // 2)
-
+        final_conv_params.stride =  scale_factor
+        final_conv_params.padding = math.ceil(
+            float(final_conv_params.kernel_size - final_conv_params.stride) / 2.0)
         self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__),
                                         nn.GELU())
         self.num_heads = num_heads
         self.in_channels = in_channels
         self.intermediate_channels = intermediate_channels
         self.out_channels = out_channels
-        self.scale_factor = scale_factor
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Compute output size based on scale factor
@@ -165,13 +164,11 @@ class ConvMultiHeadNAT(ABC, Module, Generic[ConvType, ConvNATType]):
         head_outputs = [head(x) for head in self.attention_heads]
 
         # Resize all head outputs to match the scaled input size
-        resized_outputs = [torch.nn.functional.interpolate(output, size=input_size,
-                                                           mode='nearest') if x.shape[
-                                                                              2:] != input_size else output
-                           for output in head_outputs]
+        head_outputs = [torch.nn.functional.interpolate(output, size=input_size,
+                                                        mode='nearest') for output in head_outputs]
 
         # Concatenate head outputs along the channel dimension for each batch
-        combined_output = torch.cat(resized_outputs, dim=1)
+        combined_output = torch.cat(head_outputs, dim=1)
 
         # Apply final convolution
         return self.final_conv(combined_output)

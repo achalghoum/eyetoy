@@ -4,7 +4,8 @@ from torch.nn import Conv2d, Conv3d, Conv1d,ConvTranspose2d, ConvTranspose3d,  L
 
 
 ConvType = TypeVar("ConvType", Conv2d, Conv3d, Conv1d, ConvTranspose2d, ConvTranspose3d)
-ConvNATType = TypeVar("ConvNATType", bound="ConvNAT")
-ConvMultiHeadNATType = TypeVar("ConvMultiHeadNATType", bound="ConvMultiHeadNAT")
+NAType = TypeVar("NAType", bound="NAT")
+ConvMultiHeadNAType = TypeVar("ConvMultiHeadNAType", bound="ConvMultiHeadNA")
 ConvNATTransformerType = TypeVar("ConvNATTransformerType", bound="ConvNATTransformer")
 TransformerStackType = TypeVar("TransformerStackType", bound="TransformerStack")
+SharedConvNAType = TypeVar("SharedConvNAType", bound="SharedConvNA")

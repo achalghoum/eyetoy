@@ -7,8 +7,8 @@ from torch import Tensor, nn
 from torch.nn import Module, Conv2d, Conv3d, Conv1d, InstanceNorm3d, LayerNorm
 from torch.nn import functional as F
 
-from generics import ConvType, ConvMultiHeadNATType
-from layers.attention import ConvMultiHeadNAT1D, ConvMultiHeadNAT2D, ConvMultiHeadNAT3D
+from generics import ConvType, ConvMultiHeadNAType
+from layers.attention import ConvMultiHeadNA1D, ConvMultiHeadNA2D, ConvMultiHeadNA3D
 from params import ConvParams, MultiHeadAttentionParams
 from .positional_encoding import positional_encoding
 
@@ -22,56 +22,55 @@ class LayerNorm2d(nn.LayerNorm):
         return x
 
 
-class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNATType]):
-    multi_head_attention_type: Type[ConvMultiHeadNATType]
+class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNAType]):
+    multi_head_attention_type: Type[ConvMultiHeadNAType]
     conv_type: Type[ConvType]
     norm_type: Type[Module]
 
     def __init__(self, in_channels: int, out_channels: int,
                  attention_params: MultiHeadAttentionParams, final_conv_params: ConvParams,
-                 dropout: float = 0.1, scale_factor: Optional[float] = 1, **kwargs):
+                 scale_factor: Optional[int] = 1, **kwargs):
         super(ConvNATTransformer, self).__init__()
         self.multi_head_attention = self.multi_head_attention_type(
             **attention_params.__dict__)
         self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__),
                                         nn.GELU())
         self.scale_factor = scale_factor or attention_params.scale_factor
-        padding = math.ceil(
-        float(3 - self.scale_factor) / 2.0)
+        kernel_size = max(3, self.scale_factor | 1)
+        padding = math.ceil(float(kernel_size - self.scale_factor) / 2.0)
         self.residual_upscale = self.conv_type(
-            in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=self.scale_factor, padding=padding)
+            in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=self.scale_factor, padding=padding)
         self.layernorm1 = self.norm_type(out_channels)
         self.layernorm2 = self.norm_type(out_channels)
 
 
     def residual(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         # Handle different channel dimensions using addition list in residual connections
-        x = self.residual_upscale(x)
-        return x + y
+        x = self.residual_upscale(x) + y
+        return x
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         attention_output = self.multi_head_attention(x)
-        residual_1 = self.layernorm1(
+        residual = self.layernorm1(
             self.residual(x, attention_output))
-        residual_2 = self.final_conv(residual_1)
-        residual = self.layernorm2(residual_2 + residual_1)
+        residual = self.layernorm2(self.final_conv(residual) + residual)
         return residual
 
 
-class ConvNATTransformer1D(ConvNATTransformer[Conv1d, ConvMultiHeadNAT1D]):
-    multi_head_attention_type = ConvMultiHeadNAT1D
+class ConvNATTransformer1D(ConvNATTransformer[Conv1d, ConvMultiHeadNA1D]):
+    multi_head_attention_type = ConvMultiHeadNA1D
     conv_type = Conv1d
     norm_type = LayerNorm
 
 
-class ConvNATTransformer2D(ConvNATTransformer[Conv2d, ConvMultiHeadNAT2D]):
-    multi_head_attention_type = ConvMultiHeadNAT2D
+class ConvNATTransformer2D(ConvNATTransformer[Conv2d, ConvMultiHeadNA2D]):
+    multi_head_attention_type = ConvMultiHeadNA2D
     conv_type = Conv2d
     norm_type = LayerNorm2d
 
 
-class ConvNATTransformer3D(ConvNATTransformer[Conv3d, ConvMultiHeadNAT3D]):
-    multi_head_attention_type = ConvMultiHeadNAT3D
+class ConvNATTransformer3D(ConvNATTransformer[Conv3d, ConvMultiHeadNA3D]):
+    multi_head_attention_type = ConvMultiHeadNA3D
     conv_type = Conv3d
     norm_type = InstanceNorm3d
 

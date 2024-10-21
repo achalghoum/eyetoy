@@ -86,7 +86,7 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
         for m in self.modules():
             if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
                 fan = nn.init._calculate_fan_in_and_fan_out(m.weight)[0]
-                nn.init.kaiming_normal_(m.weight, mode='fan_in' if fan > 0 else 'fan_out')
+                nn.init.kaiming_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             if isinstance(m, (nn.Linear)):
@@ -135,7 +135,7 @@ class SimpleEncoder2D(Module):
         for m in self.modules():
             if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
                 fan = nn.init._calculate_fan_in_and_fan_out(m.weight)[0]
-                nn.init.kaiming_normal_(m.weight, mode='fan_in' if fan > 0 else 'fan_out')
+                nn.init.kaiming_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             if isinstance(m, (nn.Linear)):
@@ -146,8 +146,8 @@ class SimpleEncoder2D(Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.initial_conv(x)
+        x = self.norm(x)
         x = self.transformer_stack(x)
-        print(x.shape)
         context_token = self.global_avg_pool(x)
         context_token = context_token.view(context_token.size(0), -1)
         return x, context_token

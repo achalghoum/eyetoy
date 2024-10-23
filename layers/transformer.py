@@ -1,25 +1,16 @@
-import math
 from abc import ABC
 from typing import Type, Generic, Optional, Tuple
 
 import torch
-from torch import Tensor, nn
-from torch.nn import Module, Conv2d, Conv3d, Conv1d, InstanceNorm3d, LayerNorm
-from torch.nn import functional as F
+from torch import nn
+from torch.nn import Module, Conv2d, Conv3d, Conv1d, LayerNorm, Dropout
+from torch.nn.functional import interpolate
 
 from generics import ConvType, ConvMultiHeadNAType
 from layers.attention import ConvMultiHeadNA1D, ConvMultiHeadNA2D, ConvMultiHeadNA3D
 from params import ConvParams, MultiHeadAttentionParams
+from .norms import LayerNorm2d, LayerNorm3d
 from .positional_encoding import positional_encoding
-
-
-class LayerNorm2d(nn.LayerNorm):
-    def forward(self, x: Tensor) -> Tensor:
-        x = x.permute(0, 2, 3, 1)
-        x = F.layer_norm(x, self.normalized_shape,
-                         self.weight, self.bias, self.eps)
-        x = x.permute(0, 3, 1, 2)
-        return x
 
 
 class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNAType]):
@@ -33,28 +24,43 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNAType]):
         super(ConvNATTransformer, self).__init__()
         self.multi_head_attention = self.multi_head_attention_type(
             **attention_params.__dict__)
-        self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__),
-                                        nn.GELU())
+        self.final_conv = nn.Sequential(self.conv_type(kernel_size=1,
+                                                       in_channels=out_channels,
+                                                       out_channels=out_channels*4),
+                                        nn.GELU(),
+                                        self.conv_type(kernel_size=1,
+                                                       in_channels=out_channels * 4,
+                                                       out_channels=out_channels)
+                                        )
         self.scale_factor = scale_factor or attention_params.scale_factor
-        kernel_size = max(3, self.scale_factor | 1)
-        padding = math.ceil(float(kernel_size - self.scale_factor) / 2.0)
-        self.residual_upscale = self.conv_type(
-            in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=self.scale_factor, padding=padding)
-        self.layernorm1 = self.norm_type(out_channels)
+        self.layernorm1 = self.norm_type(in_channels)
         self.layernorm2 = self.norm_type(out_channels)
+        self.dropout = Dropout(0.2)
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self._set_shortcut()
+        self._set_rescale()
 
+    def _set_shortcut(self):
+        self.shortcut = self.conv_type(in_channels=self.in_channels, out_channels=self.out_channels,
+                                       kernel_size=1,
+                                       padding="same") if self.in_channels != self.out_channels else nn.Identity()
+    def _set_rescale(self):
+        if self.scale_factor != 1:
+            self.rescale = lambda x: interpolate(x, scale_factor=1.0 / float(self.scale_factor),
+                                         mode="bilinear")
+        else:
+            self.rescale = lambda x: x
 
-    def residual(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    def residual_downsample(self, x: torch.Tensor) -> torch.Tensor:
         # Handle different channel dimensions using addition list in residual connections
-        x = self.residual_upscale(x) + y
-        return x
+        return self.shortcut(self.rescale(x))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        attention_output = self.multi_head_attention(x)
-        residual = self.layernorm1(
-            self.residual(x, attention_output))
-        residual = self.layernorm2(self.final_conv(residual) + residual)
-        return residual
+        x = self.dropout(x)
+        x = self.residual_downsample(x) + self.multi_head_attention(self.layernorm1(x))
+        x = x + self.final_conv(self.layernorm2(x))
+        return x
 
 
 class ConvNATTransformer1D(ConvNATTransformer[Conv1d, ConvMultiHeadNA1D]):
@@ -72,7 +78,7 @@ class ConvNATTransformer2D(ConvNATTransformer[Conv2d, ConvMultiHeadNA2D]):
 class ConvNATTransformer3D(ConvNATTransformer[Conv3d, ConvMultiHeadNA3D]):
     multi_head_attention_type = ConvMultiHeadNA3D
     conv_type = Conv3d
-    norm_type = InstanceNorm3d
+    norm_type = LayerNorm3d
 
 
 class GlobalAttentionTransformer(Module):
@@ -127,8 +133,8 @@ class GlobalAttentionTransformer(Module):
             [context_token, register_tokens], dim=1)
         if not self.use_input_context_token:
             tokens = tokens + positional_encoding(tokens, d=self.d_model)
-        x_w_tokens = torch.cat(
-            [tokens, x_flat], dim=1)
+        x_w_tokens = self.layernorm1(torch.cat(
+            [tokens, x_flat], dim=1))
 
         seq_len = x_w_tokens.size(1)
         mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device)
@@ -144,18 +150,14 @@ class GlobalAttentionTransformer(Module):
         attn_output, _ = self.attention(
             key=x_w_tokens, query=x_w_tokens, value=x_w_tokens, attn_mask=mask)
         # Apply first residual connection and layer normalization
-        attn_output = self.layernorm1(attn_output + x_w_tokens)
-
-        # Apply feed-forward network
-        ffn_output = self.ffn(attn_output)
-        ffn_output = self.dropout(ffn_output)
+        attn_output = attn_output + x_w_tokens
 
         # Apply second residual connection and layer normalization
-        output = self.layernorm2(ffn_output + attn_output)
+        attn_output = self.ffn(self.layernorm2(attn_output)) + attn_output
 
-        context_token_out = output[:, 0:1, :]
-        register_tokens_out = output[:, 1:1 + self.num_register_tokens, :]
-        feature_map_out = output[:, 1 + self.num_register_tokens:, :]
+        context_token_out = attn_output[:, 0:1, :]
+        register_tokens_out = attn_output[:, 1:1 + self.num_register_tokens, :]
+        feature_map_out = attn_output[:, 1 + self.num_register_tokens:, :]
 
         feature_map_out = feature_map_out.transpose(
             1, 2).reshape(original_shape)

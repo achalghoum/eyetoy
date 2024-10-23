@@ -34,9 +34,9 @@ class CalTech256Split(Dataset):
         
         return image, class_id
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize([0.485, 0.456, 0.406], [0.485, 0.456, 0.406]),
+    transforms.Resize((128,128)),
+    transforms.Normalize([0.5538, 0.5341, 0.5063],[0.2364, 0.2356, 0.2381])
 ])
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -44,4 +44,4 @@ train_lst_path = os.path.join(current_dir, "256_ObjectCategories", "train_lst.tx
 val_lst_path = os.path.join(current_dir, "256_ObjectCategories", "val_lst.txt")
 
 caltech_256_train = CalTech256Split(train_lst_path, root_dir=current_dir, transform=transform)
-caltech_256_val = CalTech256Split(val_lst_path, root_dir=current_dir)
+caltech_256_val = CalTech256Split(val_lst_path, root_dir=current_dir, transform=transform)

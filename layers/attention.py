@@ -4,10 +4,10 @@ from typing import Generic, List, Callable, Optional, Type
 
 import natten
 import torch
-from natten.functional import na2d, na3d, na2d_qk, na3d_qk, na2d_av, na3d_av, na1d, na1d_qk, na1d_av
+from natten.functional import na2d, na3d, na1d
 from torch import nn
 from torch.nn import Module, Conv2d, Conv3d, ConvTranspose2d, ConvTranspose3d, \
-    Conv1d, Dropout, BatchNorm1d, BatchNorm2d, BatchNorm3d
+    Conv1d, Dropout
 
 from generics import ConvType, NAType, SharedConvNAType
 from params import ConvParams, NeighborhoodAttentionParams, HeadParams
@@ -18,9 +18,6 @@ natten.use_fused_na()
 class NA(ABC, Module, Generic[ConvType]):
     conv_type: Type[ConvType]
     atten_func: Callable
-    qk_func: Callable
-    v_func: Callable
-    rpb_fn: Optional[Callable] = None
 
     def __init__(self,
                  attn_params: NeighborhoodAttentionParams,
@@ -56,8 +53,7 @@ class NA(ABC, Module, Generic[ConvType]):
         kernel_size -= 1 if kernel_size % 2 == 0 else 0
 
         return self.transform_from_nhw1c(self.atten_func(query=query, key=key, value=value, kernel_size=kernel_size,
-                                 dilation=self.attention_stride,
-                                 is_causal=self.is_causal, scale=self.scale))
+                                 dilation=self.attention_stride,is_causal=self.is_causal))
 
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
         # Check if input is 3D, 4D, or 5D (1D, 2D, or 3D data)
@@ -85,39 +81,26 @@ class NA(ABC, Module, Generic[ConvType]):
 class NA1D(NA[Conv1d]):
     conv_type = Conv1d
     atten_func = staticmethod(na1d)
-    qk_func = staticmethod(na1d_qk)
-    v_func = staticmethod(na1d_av)
-    norm_type = BatchNorm1d
 
 
 class NA2D(NA[Conv2d]):
     conv_type = Conv2d
     atten_func = staticmethod(na2d)
-    qk_func = staticmethod(na2d_qk)
-    v_func = staticmethod(na2d_av)
-    norm_type = BatchNorm2d
 
 
 class NA3D(NA[Conv3d]):
     conv_type = Conv3d
     atten_func = staticmethod(na3d)
-    qk_func = staticmethod(na3d_qk)
-    v_func = staticmethod(na3d_av)
-    norm_type = BatchNorm3d
 
 
 class NA2DTransposed(NA[ConvTranspose2d]):
     conv_type = ConvTranspose2d
     atten_func = staticmethod(na2d)
-    qk_func = staticmethod(na2d_qk)
-    v_func = staticmethod(na2d_av)
 
 
 class NA3DTransposed(NA[ConvTranspose3d]):
     conv_type = ConvTranspose3d
     atten_func = staticmethod(na3d)
-    qk_func = staticmethod(na3d_qk)
-    v_func = staticmethod(na3d_av)
 
 
 class SharedConvNA(ABC, Module, Generic[ConvType, NAType]):
@@ -128,7 +111,7 @@ class SharedConvNA(ABC, Module, Generic[ConvType, NAType]):
                  in_channels: int,
                  intermediate_channels: int,
                  conv_params: ConvParams,
-                 dropout: float = 0.1):
+                 dropout: float = 0.2):
         super().__init__()
         self.conv_params = conv_params
         self.conv = self.conv_type(**conv_params.__dict__)
@@ -139,7 +122,7 @@ class SharedConvNA(ABC, Module, Generic[ConvType, NAType]):
         self.dropout = Dropout(dropout)
 
     def forward(self, x: torch.Tensor):
-        shared_features = self.dropout(self.conv(x))
+        shared_features = self.conv(x)
         return (na(shared_features) for na in self.nas)
 
 
@@ -174,15 +157,21 @@ class ConvMultiHeadNA(ABC, Module, Generic[ConvType, SharedConvNAType]):
         ])
         final_conv_params.in_channels = sum(
             param.intermediate_channels * len(param.attn_params) for param in head_params)
-        final_conv_params.kernel_size = max(3, scale_factor | 1)
-        final_conv_params.stride = scale_factor
+        final_conv_params.kernel_size = 1
+        final_conv_params.stride = 1
         final_conv_params.out_channels = out_channels
-        final_conv_params.padding = math.ceil(
-            float(final_conv_params.kernel_size - final_conv_params.stride) / 2.0)
-        self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__),
-                                        nn.GELU())
+        self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__))
         self.intermediate_channels = intermediate_channels
         self.out_channels = out_channels
+        self.dropout = Dropout(0.2)
+        self.scale_fn = self._get_scale_fn(scale_factor)
+    
+    def _get_scale_fn(self, scale_factor):
+        if scale_factor == 1:
+            return nn.Identity()
+        factor = 1.0 / float(scale_factor)
+        return lambda x : torch.nn.functional.interpolate(x, scale_factor = factor,
+                                                        mode='bilinear')
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Compute output size based on scale factor
@@ -191,7 +180,7 @@ class ConvMultiHeadNA(ABC, Module, Generic[ConvType, SharedConvNAType]):
         # Process all heads for all batches
         combined_output = torch.cat([torch.nn.functional.interpolate(output, size=input_size,
                                                         mode='nearest') for head in self.attention_heads for output in head(x)], dim=1)
-        print(combined_output.shape)
+        combined_output = self.scale_fn(self.dropout(combined_output))
         # Apply final convolution
         return self.final_conv(combined_output)
 

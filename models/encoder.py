@@ -3,9 +3,11 @@ from typing import Generic, Type, List, Tuple
 
 import torch
 from torch import nn
-from torch.nn import Module, Conv1d, Conv2d, Conv3d
+from torch.nn import Module, Conv1d, Conv2d, Conv3d, LayerNorm
+from torchvision.models.convnext import LayerNorm2d
 
 from generics import ConvNATTransformerType, TransformerStackType
+from layers.norms import LayerNorm3d
 from layers.positional_encoding import positional_encoding
 from layers.transformer import ConvNATTransformer1D, ConvNATTransformer2D, ConvNATTransformer3D, \
     GlobalAttentionTransformer
@@ -15,30 +17,35 @@ from params import DEFAULT_IMG_ENCODER_PARAMS, TransformerParams
 
 class TransformerStack(Module, Generic[ConvNATTransformerType]):
     transformer_type: Type[ConvNATTransformerType]
+    norm_type: Type[Module]
 
     def __init__(self, transformer_params: List[TransformerParams]):
         super().__init__()
-        self.transformers = torch.nn.ModuleList([
-            self.transformer_type(**transformer_param.__dict__) for transformer_param, index in
-            zip(transformer_params, range(len(transformer_params)))
-        ])
+        self.transformers = torch.nn.Sequential(
+            *[self.transformer_type(**transformer_param.__dict__) for transformer_param in
+              transformer_params]
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for transformer in self.transformers:
-            x = transformer(x)
+        x = self.transformers(x)
+
         return x
 
 
 class TransformerStack1D(TransformerStack[ConvNATTransformer1D]):
     transformer_type = ConvNATTransformer1D
-
+##
 
 class TransformerStack2D(TransformerStack[ConvNATTransformer2D]):
     transformer_type = ConvNATTransformer2D
+    norm_type = LayerNorm2d
+    conv_type = Conv2d
 
 
 class TransformerStack3D(TransformerStack[ConvNATTransformer3D]):
     transformer_type = ConvNATTransformer3D
+    norm_type = LayerNorm3d
+    conv_type = Conv3d
 
 
 class GlobalAttentionStack(Module):
@@ -46,7 +53,7 @@ class GlobalAttentionStack(Module):
                  num_register_tokens: int = 4):
         super().__init__()
         self.d_model = d_model
-        self.attention_blocks = torch.nn.ModuleList([
+        self.attention_blocks = torch.nn.Sequential(*[
             GlobalAttentionTransformer(d_model, num_heads, num_register_tokens, dropout,
                                        use_input_context_token=(i != 0),
                                        use_input_register_tokens=(i != 0))
@@ -55,10 +62,7 @@ class GlobalAttentionStack(Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[
         torch.Tensor, torch.Tensor]:
-        output, context_token, registers = self.attention_blocks[0](x)
-        for i in range(1, len(self.attention_blocks)):
-            output, context_token, registers = self.attention_blocks[i](
-                output, context_token, registers)
+        output, context_token, _ = self.attention_blocks(x)
         return output, context_token
 
 
@@ -70,8 +74,6 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
                  global_attention_dropout: float, num_global_attention_layers: int,
                  initial_conv_params: ConvParams):
         super(Encoder, self).__init__()
-        self.norm = nn.GroupNorm(num_channels=initial_conv_params.out_channels,
-                                 num_groups=initial_conv_params.out_channels)
         self.initial_conv = self.conv_type(**initial_conv_params.__dict__)
         self.transformer_stack = self.transformer_stack_type(
             transformer_params)
@@ -86,7 +88,7 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
         for m in self.modules():
             if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
                 fan = nn.init._calculate_fan_in_and_fan_out(m.weight)[0]
-                nn.init.kaiming_normal_(m.weight)
+                nn.init.kaiming_normal_(m.weight, mode='fan_in' if fan > 0 else 'fan_out')
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             if isinstance(m, (nn.Linear)):
@@ -97,7 +99,6 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.initial_conv(x)
         x = x + positional_encoding(x, d=x.shape[1]) * 0.1
-        x = self.norm(x)
         transformed_input = self.transformer_stack(x)
         output, context_token = self.global_attention(transformed_input)
         return output, context_token
@@ -117,12 +118,11 @@ class Encoder3D(Encoder[TransformerStack3D]):
     transformer_stack_type = TransformerStack3D
     conv_type = Conv3d
 
+
 class SimpleEncoder2D(Module):
     def __init__(self, transformer_params: List[TransformerParams],
                  initial_conv_params: ConvParams, **kwargs):
         super(SimpleEncoder2D, self).__init__()
-        self.norm = nn.GroupNorm(num_channels=initial_conv_params.out_channels,
-                                 num_groups=initial_conv_params.out_channels)
         self.initial_conv = Conv2d(**initial_conv_params.__dict__)
         self.transformer_stack = TransformerStack2D(
             transformer_params)
@@ -130,12 +130,10 @@ class SimpleEncoder2D(Module):
         self.d_model = transformer_params[-1].out_channels
         self._init_weights()
 
-
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-                fan = nn.init._calculate_fan_in_and_fan_out(m.weight)[0]
-                nn.init.kaiming_normal_(m.weight)
+                nn.init.xavier_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             if isinstance(m, (nn.Linear)):
@@ -143,10 +141,9 @@ class SimpleEncoder2D(Module):
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
 
-
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.initial_conv(x)
-        x = self.norm(x)
+        x = x + positional_encoding(x, d=x.shape[1]) * 0.1
         x = self.transformer_stack(x)
         context_token = self.global_avg_pool(x)
         context_token = context_token.view(context_token.size(0), -1)

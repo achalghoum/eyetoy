@@ -7,7 +7,7 @@ from .datasets.loader import caltech_256_train, caltech_256_val
 from models.encoder import DEFAULT_2D_ENCODER, Encoder2D
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from  torch.cuda.amp import autocast
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 ACCUMULATION_STEPS = 1
 MAX_GRADIENT = 4
 TRAIN_TOTAL = len(caltech_256_train)
@@ -51,6 +51,7 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
             _, predicted = outputs.max(1)
             batch_correct = predicted.eq(labels).sum().item()
             train_correct += batch_correct
+            train_loss += batch_loss.item()
 
             batch_loss.backward()
 
@@ -63,7 +64,7 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                 #             print(f"Epoch {epoch}, Batch {batch_idx}: Large gradient in {name}: {grad_norm}")
                 #         elif grad_norm < 1e-4:
                 #             print(f"Epoch {epoch}, Batch {batch_idx}: Small gradient in {name}: {grad_norm}")
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRADIENT)
                 optimizer.step()
                 model.zero_grad()
             print(
@@ -120,6 +121,6 @@ if __name__ == "__main__":
     
     # Train the model
     device = torch.device("cuda")
-    weight_decay = 1e-4  # Adjust this value as needed
-    train_encoder_classifier(model, train_loader, val_loader, num_epochs=10, 
-                             learning_rate=5e-4, device=device, weight_decay=weight_decay)
+    weight_decay = 1e-5  # Adjust this value as needed
+    train_encoder_classifier(model, train_loader, val_loader, num_epochs=30, 
+                             learning_rate=1e-4, device=device, weight_decay=weight_decay)

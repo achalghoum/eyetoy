@@ -25,7 +25,6 @@ class NA(ABC, Module, Generic[ConvType]):
                  is_causal: bool = False,
                  **kwargs):
         super(NA, self).__init__()
-        self.scale = math.sqrt(channels)
         # Linear Layers for Q, K, V
         self.q_conv = self.conv_type(kernel_size=1, in_channels=channels,
                                      out_channels=channels)

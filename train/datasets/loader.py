@@ -1,4 +1,5 @@
 import os
+import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from torchvision import datasets, transforms
@@ -33,15 +34,25 @@ class CalTech256Split(Dataset):
             image = self.transform(image)
         
         return image, class_id
-transform = transforms.Compose([
+train_transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.ConvertImageDtype(torch.uint8),
+    transforms.AutoAugment(),
+    transforms.ConvertImageDtype(torch.float32),
+    transforms.Resize((128,128)),
+    transforms.Normalize([0.5538, 0.5341, 0.5063],[0.2364, 0.2356, 0.2381])
+])
+val_transform = transforms.Compose([
+
     transforms.ToTensor(),
     transforms.Resize((128,128)),
     transforms.Normalize([0.5538, 0.5341, 0.5063],[0.2364, 0.2356, 0.2381])
+
 ])
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 train_lst_path = os.path.join(current_dir, "256_ObjectCategories", "train_lst.txt")
 val_lst_path = os.path.join(current_dir, "256_ObjectCategories", "val_lst.txt")
 
-caltech_256_train = CalTech256Split(train_lst_path, root_dir=current_dir, transform=transform)
-caltech_256_val = CalTech256Split(val_lst_path, root_dir=current_dir, transform=transform)
+caltech_256_train = CalTech256Split(train_lst_path, root_dir=current_dir, transform=train_transform)
+caltech_256_val = CalTech256Split(val_lst_path, root_dir=current_dir, transform=val_transform)

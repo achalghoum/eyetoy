@@ -1,5 +1,5 @@
 import math
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import Generic, List, Callable, Optional, Type
 
 import natten
@@ -52,44 +52,48 @@ class NA(ABC, Module, Generic[ConvType]):
         kernel_size -= 1 if kernel_size % 2 == 0 else 0
 
         return self.transform_from_nhw1c(self.atten_func(query=query, key=key, value=value, kernel_size=kernel_size,
-                                 dilation=self.attention_stride,is_causal=self.is_causal))
+                                                         dilation=self.attention_stride, is_causal=self.is_causal))
 
+    @abstractmethod
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
-        # Check if input is 3D, 4D, or 5D (1D, 2D, or 3D data)
-        if x.dim() == 3:  # 1D data (NCL)
-            return x.permute(0, 2, 1).unsqueeze(2)  # NL1C
-        elif x.dim() == 4:  # 2D data (NCHW)
-            return x.permute(0, 2, 3, 1).unsqueeze(3)  # NHW1C
-        elif x.dim() == 5:  # 3D data (NCDHW)
-            return x.permute(0, 2, 3, 4, 1).unsqueeze(4)  # NDHW1C
-        else:
-            raise ValueError(f"Unsupported input dimension: {x.dim()}")
-
+        raise ValueError(f"Unsupported input dimension: {x.dim()}")
+        
+    @abstractmethod
     def transform_from_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
-        # Check if input is 4D, 5D, or 6D (1D, 2D, or 3D data)
-        if x.dim() == 4:  # 1D data (NL1C)
-            return x.squeeze(2).permute(0, 2, 1)  # NCL
-        elif x.dim() == 5:  # 2D data (NHW1C)
-            return x.squeeze(3).permute(0, 3, 1, 2)  # NCHW
-        elif x.dim() == 6:  # 3D data (NDHW1C)
-            return x.squeeze(4).permute(0, 4, 1, 2, 3)  # NCDHW
-        else:
-            raise ValueError(f"Unsupported input dimension: {x.dim()}")
+        raise ValueError(f"Unsupported input dimension: {x.dim()}")
 
 
 class NA1D(NA[Conv1d]):
     conv_type = Conv1d
     atten_func = staticmethod(na1d)
 
+    def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
+        return x.permute(0, 2, 1).unsqueeze(2)  # NL1C
+
+    def transform_from_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
+        return x.squeeze(2).permute(0, 2, 1)  # NCL
+
 
 class NA2D(NA[Conv2d]):
     conv_type = Conv2d
     atten_func = staticmethod(na2d)
 
+    def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
+        return x.permute(0, 2, 3, 1).unsqueeze(3)  # NHW1C
+
+    def transform_from_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
+        return x.squeeze(3).permute(0, 3, 1, 2)  # NCHW
+
 
 class NA3D(NA[Conv3d]):
     conv_type = Conv3d
     atten_func = staticmethod(na3d)
+
+    def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
+        return x.permute(0, 2, 3, 4, 1).unsqueeze(4)  # NDHW1C
+
+    def transform_from_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
+        return x.squeeze(4).permute(0, 4, 1, 2, 3)  # NCDHW
 
 
 class NA2DTransposed(NA[ConvTranspose2d]):
@@ -118,7 +122,6 @@ class SharedConvNA(ABC, Module, Generic[ConvType, NAType]):
             [self.na_type(attn_params=params, channels=intermediate_channels) for params in
              attn_params])
         self.in_channels = in_channels
-        self.dropout = Dropout(dropout)
 
     def forward(self, x: torch.Tensor):
         shared_features = self.conv(x)
@@ -159,27 +162,27 @@ class ConvMultiHeadNA(ABC, Module, Generic[ConvType, SharedConvNAType]):
         final_conv_params.kernel_size = 1
         final_conv_params.stride = 1
         final_conv_params.out_channels = out_channels
-        self.final_conv = nn.Sequential(self.conv_type(**final_conv_params.__dict__))
+        self.final_conv = self.conv_type(**final_conv_params.__dict__)
         self.intermediate_channels = intermediate_channels
         self.out_channels = out_channels
-        self.dropout = Dropout(0.2)
         self.scale_fn = self._get_scale_fn(scale_factor)
-    
+        self.dropout = nn.Dropout(0.1)
+
     def _get_scale_fn(self, scale_factor):
         if scale_factor == 1:
             return nn.Identity()
         factor = 1.0 / float(scale_factor)
-        return lambda x : torch.nn.functional.interpolate(x, scale_factor = factor,
-                                                        mode='bilinear')
+        return lambda x: torch.nn.functional.interpolate(x, scale_factor=factor,
+                                                         mode='bilinear')
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Compute output size based on scale factor
         input_size = x.shape[2:]  # Assuming NCHW or NCDHW format
 
         # Process all heads for all batches
-        combined_output = torch.cat([torch.nn.functional.interpolate(output, size=input_size,
-                                                        mode='nearest') for head in self.attention_heads for output in head(x)], dim=1)
-        combined_output = self.scale_fn(self.dropout(combined_output))
+        combined_output = torch.cat([torch.nn.functional.interpolate(self.dropout(output), size=input_size,
+                                                                     mode='nearest') for head in self.attention_heads for output in head(x)], dim=1)
+        combined_output = self.scale_fn(combined_output)
         # Apply final convolution
         return self.final_conv(combined_output)
 

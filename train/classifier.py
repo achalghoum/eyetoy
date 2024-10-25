@@ -7,9 +7,9 @@ from .datasets.loader import caltech_256_train, caltech_256_val
 from models.encoder import DEFAULT_2D_ENCODER, Encoder2D
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from  torch.cuda.amp import autocast
-BATCH_SIZE = 16
+BATCH_SIZE = 32
 ACCUMULATION_STEPS = 1
-MAX_GRADIENT = 4
+MAX_GRADIENT = 1
 TRAIN_TOTAL = len(caltech_256_train)
 
 class Encoder2DClassifier(nn.Module):
@@ -44,6 +44,7 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
         train_correct = 0
         loss = 0
         optimizer.zero_grad()
+        model.zero_grad()
         for batch_idx, (inputs, labels) in enumerate(train_loader):
             inputs, labels = inputs.to(device), labels.to(device)
             outputs = model(inputs)
@@ -57,13 +58,6 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
 
             #Gradient monitoring
             if (batch_idx+1) % ACCUMULATION_STEPS == 0:
-                # for name, param in model.named_parameters():
-                #     if param.grad is not None:
-                #         grad_norm = param.grad.norm().item()
-                #         if grad_norm > 1.0:
-                #             print(f"Epoch {epoch}, Batch {batch_idx}: Large gradient in {name}: {grad_norm}")
-                #         elif grad_norm < 1e-4:
-                #             print(f"Epoch {epoch}, Batch {batch_idx}: Small gradient in {name}: {grad_norm}")
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRADIENT)
                 optimizer.step()
                 model.zero_grad()

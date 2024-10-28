@@ -11,7 +11,7 @@ class LayerNorm2d(nn.LayerNorm):
         return x
 
 class LayerNorm3d(nn.LayerNorm):
-    
+
     def forward(self, x: Tensor) -> Tensor:
         x = x.permute(0, 2, 3, 4, 1)
         x = F.layer_norm(x, self.normalized_shape,

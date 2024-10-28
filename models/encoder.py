@@ -126,8 +126,9 @@ class SimpleEncoder2D(Module):
         self.initial_conv = Conv2d(**initial_conv_params.__dict__)
         self.transformer_stack = TransformerStack2D(
             transformer_params)
-        self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.d_model = transformer_params[-1].out_channels
+        self.layer_norm = LayerNorm2d(self.d_model)
+        self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
         self._init_weights()
 
     def _init_weights(self):
@@ -144,7 +145,7 @@ class SimpleEncoder2D(Module):
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         x = self.initial_conv(x)
         x = x + positional_encoding(x, d=x.shape[1]) * 0.1
-        x = self.transformer_stack(x)
+        x = self.layer_norm(self.transformer_stack(x))
         context_token = self.global_avg_pool(x)
         context_token = context_token.view(context_token.size(0), -1)
         return x, context_token

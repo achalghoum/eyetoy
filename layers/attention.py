@@ -41,13 +41,10 @@ class NA(ABC, Module, Generic[ConvType]):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Linear Transformations for Q, K, V
-        query = self.q_conv(x)
-        key = self.k_conv(x)
-        value = self.v_conv(x)
+        query = self.transform_to_nhw1c(self.q_conv(x))
+        key = self.transform_to_nhw1c(self.k_conv(x))
+        value = self.transform_to_nhw1c(self.v_conv(x))
         # Transform query, key, value from NCHW to NHW1C
-        query = self.transform_to_nhw1c(query)
-        key = self.transform_to_nhw1c(key)
-        value = self.transform_to_nhw1c(value)
         kernel_size = min(self.attention_window, *x.shape[2:])
         kernel_size -= 1 if kernel_size % 2 == 0 else 0
 
@@ -57,7 +54,7 @@ class NA(ABC, Module, Generic[ConvType]):
     @abstractmethod
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
         raise ValueError(f"Unsupported input dimension: {x.dim()}")
-        
+
     @abstractmethod
     def transform_from_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
         raise ValueError(f"Unsupported input dimension: {x.dim()}")
@@ -152,7 +149,8 @@ class ConvMultiHeadNA(ABC, Module, Generic[ConvType, SharedConvNAType]):
                  intermediate_channels: int,
                  out_channels: int,
                  final_conv_params: ConvParams,
-                 scale_factor: int):
+                 scale_factor: int,
+                 dropout:float = 0.2):
         super().__init__()
         self.attention_heads = torch.nn.ModuleList([
             self.conv_attn_type(**head_param.__dict__) for head_param in head_params
@@ -166,7 +164,7 @@ class ConvMultiHeadNA(ABC, Module, Generic[ConvType, SharedConvNAType]):
         self.intermediate_channels = intermediate_channels
         self.out_channels = out_channels
         self.scale_fn = self._get_scale_fn(scale_factor)
-        self.dropout = nn.Dropout(0.1)
+        self.dropout = nn.Dropout(dropout)
 
     def _get_scale_fn(self, scale_factor):
         if scale_factor == 1:

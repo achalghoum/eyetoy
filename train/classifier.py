@@ -1,4 +1,3 @@
-from typing import Union
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -6,7 +5,6 @@ from torch.utils.data import DataLoader
 from .datasets.loader import caltech_256_train, caltech_256_val
 from models.encoder import DEFAULT_2D_ENCODER, Encoder2D
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from  torch.cuda.amp import autocast
 BATCH_SIZE = 32
 ACCUMULATION_STEPS = 1
 MAX_GRADIENT = 1
@@ -17,7 +15,6 @@ class Encoder2DClassifier(nn.Module):
         super().__init__()
         self.encoder = encoder
         context_token_dim = encoder.d_model
-        self.dropout = nn.Dropout(dropout_rate)
         self.classifier = nn.Linear(context_token_dim, num_classes)
         nn.init.xavier_uniform_(self.classifier.weight)
         nn.init.zeros_(self.classifier.bias)
@@ -29,11 +26,11 @@ class Encoder2DClassifier(nn.Module):
 
 # Training function
 def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader,
-                             val_loader: DataLoader, num_epochs: int, learning_rate: float, 
+                             val_loader: DataLoader, num_epochs: int, learning_rate: float,
                              device: torch.device, weight_decay=1e-5):
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=3)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
     best_val_loss = float('inf')
     patience = 5
     counter = 0
@@ -61,8 +58,8 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRADIENT)
                 optimizer.step()
                 model.zero_grad()
-            print(
-                f"Epoch {epoch + 1}, Batch {batch_idx+1}, Loss: {batch_loss.item()*ACCUMULATION_STEPS:.4f}, Batch Correct: {100*batch_correct/BATCH_SIZE:.2f}%")
+                print(
+                    f"Epoch {epoch + 1}, Batch {batch_idx+1}, Loss: {batch_loss.item()*ACCUMULATION_STEPS:.4f}, Batch Correct: {100*train_correct/((batch_idx+1)*BATCH_SIZE):.2f}%")
 
             # Keep only the most recent values
 
@@ -104,17 +101,17 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
 # Example usage
 if __name__ == "__main__":
     # Set up data loaders (you'll need to adjust this based on your dataset)
-        
+
     train_loader = DataLoader(caltech_256_train, batch_size=BATCH_SIZE, shuffle=True, num_workers=1)
     val_loader = DataLoader(caltech_256_val, batch_size=BATCH_SIZE, shuffle=False, num_workers=1)
-    
+
     # Create the model
     encoder = DEFAULT_2D_ENCODER
     num_classes = len(caltech_256_train.classes)
     model = Encoder2DClassifier(encoder, num_classes)
-    
+
     # Train the model
     device = torch.device("cuda")
     weight_decay = 1e-5  # Adjust this value as needed
-    train_encoder_classifier(model, train_loader, val_loader, num_epochs=30, 
+    train_encoder_classifier(model, train_loader, val_loader, num_epochs=30,
                              learning_rate=1e-4, device=device, weight_decay=weight_decay)

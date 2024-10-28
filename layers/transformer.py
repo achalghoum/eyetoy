@@ -19,7 +19,7 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNAType]):
     norm_type: Type[Module]
 
     def __init__(self, in_channels: int, out_channels: int,
-                 attention_params: MultiHeadAttentionParams, final_conv_params: ConvParams,
+                 attention_params: MultiHeadAttentionParams,
                  scale_factor: Optional[int] = 1, **kwargs):
         super(ConvNATTransformer, self).__init__()
         self.multi_head_attention = self.multi_head_attention_type(
@@ -57,9 +57,8 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNAType]):
         return self.shortcut(self.rescale(x))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.dropout(x)
-        x = self.residual_downsample(x) + self.multi_head_attention(self.layernorm1(x))
-        x = x + self.final_conv(self.layernorm2(x))
+        x = self.residual_downsample(x) + self.multi_head_attention(self.dropout(self.layernorm1(x)))
+        x = x + self.final_conv(self.dropout(self.layernorm2(x)))
         return x
 
 

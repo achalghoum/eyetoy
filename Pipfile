@@ -9,6 +9,7 @@ torchvision = "*"
 torchaudio = "*"
 pip = "*"
 natten = "==0.17.1"
+gdown = "*"
 
 [dev-packages]
 

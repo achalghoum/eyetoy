@@ -44,7 +44,6 @@ class TransformerParams:
     in_channels: int
     out_channels: int
     attention_params: MultiHeadAttentionParams
-    final_conv_params: ConvParams
     scale_factor: Optional[int] = 1
 
 @dataclass
@@ -101,12 +100,6 @@ def create_conv_nat_params(in_channels, out_channels,attn_kernel_sizes, conv_par
             ),
             scale_factor=scale_factor
         ),
-        final_conv_params=ConvParams(
-            in_channels=out_channels,
-            out_channels=out_channels,
-            kernel_size=3,
-            padding="same"
-        ),
         scale_factor=scale_factor
     )
 
@@ -118,29 +111,30 @@ second_size_convs = [ConvParams(kernel_size=1,stride=1,padding="same"),
                      ConvParams(kernel_size=2,stride=2,padding="valid"),
                      ConvParams(kernel_size=3,stride=3,padding="valid"),
                      ConvParams(kernel_size=4,stride=4,padding="valid")]
-final_size_convs = [ConvParams(kernel_size=1, stride=1,padding="valid")]
-first_attention_params = [17, 13, 7, 5]
+final_size_convs = [ConvParams(kernel_size=1, stride=1,padding="same")]
+first_attention_params = [17, 13, 11, 7]
 second_attention_params = [11, 11, 11, 11]
 third_attention_params = [7, 7, 7, 7]
-final_attention_params = [7]
+final_attention_params = [5]
 # Create the specific configuration
 DEFAULT_IMG_ENCODER_PARAMS = VisionTransformerParams(
     initial_conv_params= ConvParams(kernel_size=3,padding="same",stride=1,in_channels=3,out_channels=32),
     transformer_params=[
         # First 4 layers with 32 channels
-        create_conv_nat_params(32, 128,first_attention_params, first_size_convs, num_heads=1, scale_factor=2) ,
-        create_conv_nat_params(128, 128,first_attention_params, first_size_convs, num_heads=1) ,
+        create_conv_nat_params(32, 128,first_attention_params, first_size_convs, num_heads=4, scale_factor=2) ,
+        create_conv_nat_params(128, 128,first_attention_params, first_size_convs, num_heads=4) ,
         # Downsampling layer to 368 channels
-        create_conv_nat_params(128, 256,first_attention_params, first_size_convs, num_heads=1, scale_factor=2),
-        create_conv_nat_params(256, 256,second_attention_params, second_size_convs, num_heads=1),
+        create_conv_nat_params(128, 256,first_attention_params, first_size_convs, num_heads=4, scale_factor=2),
+        create_conv_nat_params(256, 256,second_attention_params, second_size_convs, num_heads=4),
+
         # 4 layers with 368 channels
-        create_conv_nat_params(256, 512,second_attention_params, second_size_convs, num_heads=1,scale_factor=2),
-        create_conv_nat_params(512, 512,second_attention_params, second_size_convs, num_heads=1),
+        create_conv_nat_params(256, 512,second_attention_params, second_size_convs, num_heads=4,scale_factor=2),
+        create_conv_nat_params(512, 512,second_attention_params, second_size_convs, num_heads=4),
         # Downsampling layer to 768 channels
-        create_conv_nat_params(512, 768,third_attention_params, second_size_convs, num_heads=1, scale_factor=2),
+        create_conv_nat_params(512, 768,third_attention_params, second_size_convs, num_heads=4, scale_factor=2),
 
         # Final layer with 768 channels and 16 heads
-        create_conv_nat_params(768, 768,final_attention_params, final_size_convs, num_heads=4)
+        create_conv_nat_params(768, 768,final_attention_params, final_size_convs, num_heads=4),
     ],
     global_attention_params=GlobalAttentionTransformerParams(
         d_model=768,

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from .datasets.loader import caltech_256_train, caltech_256_val
 from models.encoder import DEFAULT_2D_ENCODER, Encoder2D
 from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -34,12 +35,12 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
     best_val_loss = float('inf')
     patience = 5
     counter = 0
+    writer = SummaryWriter()
     model.to(device)
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0
         train_correct = 0
-        loss = 0
         optimizer.zero_grad()
         model.zero_grad()
         for batch_idx, (inputs, labels) in enumerate(train_loader):
@@ -53,16 +54,13 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
 
             batch_loss.backward()
 
-            #Gradient monitoring
-            if (batch_idx+1) % ACCUMULATION_STEPS == 0:
+            if (batch_idx + 1) % ACCUMULATION_STEPS == 0:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRADIENT)
                 optimizer.step()
                 model.zero_grad()
-                print(
-                    f"Epoch {epoch + 1}, Batch {batch_idx+1}, Loss: {batch_loss.item()*ACCUMULATION_STEPS:.4f}, Batch Correct: {100*train_correct/((batch_idx+1)*BATCH_SIZE):.2f}%")
 
-            # Keep only the most recent values
-
+        avg_train_loss = train_loss / len(train_loader)
+        train_accuracy = 100. * train_correct / TRAIN_TOTAL
 
         # Validation
         model.eval()
@@ -80,12 +78,19 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                 val_correct += predicted.eq(labels).sum().item()
 
         avg_val_loss = val_loss / len(val_loader)
+        val_accuracy = 100. * val_correct / val_total
         scheduler.step(avg_val_loss)
 
-        print(f"Epoch {epoch+1} - Train Loss: {train_loss/len(train_loader):.4f}, "
-              f"Train Accuracy: {100.*train_correct/TRAIN_TOTAL:.2f}%, "
+        writer.add_scalar('Loss/train', avg_train_loss, epoch)
+        writer.add_scalar('Loss/val', avg_val_loss, epoch)
+        writer.add_scalar('Accuracy/train', train_accuracy, epoch)
+        writer.add_scalar('Accuracy/val', val_accuracy, epoch)
+        writer.add_scalar('Learning Rate', optimizer.param_groups[0]['lr'], epoch)
+
+        print(f"Epoch {epoch + 1} - Train Loss: {avg_train_loss:.4f}, "
+              f"Train Accuracy: {train_accuracy:.2f}%, "
               f"Val Loss: {avg_val_loss:.4f}, "
-              f"Val Accuracy: {100.*val_correct/val_total:.2f}%")
+              f"Val Accuracy: {val_accuracy:.2f}%")
 
         # Early stopping check
         if avg_val_loss < best_val_loss:
@@ -95,9 +100,9 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
         else:
             counter += 1
             if counter >= patience:
-                print(f"Early stopping triggered after {epoch+1} epochs")
+                print(f"Early stopping triggered after {epoch + 1} epochs")
                 break
-
+    writer.close()
 # Example usage
 if __name__ == "__main__":
     # Set up data loaders (you'll need to adjust this based on your dataset)

@@ -2,3 +2,14 @@
 /.vscode
 *.cpython*
 *.jpg
+*.tfevents.*
+*batch*
+test_batch
+cifar
+*.html
+/train/datasets/cifar_10/cifar-10-python.tar.gz
+/train/datasets/caltech256
+/train/datasets/cifar-100-python.tar.gz
+/train/datasets/cifar-10-python.tar.gz
+/train/datasets/cifar-100-python
+/train/datasets/caltech256

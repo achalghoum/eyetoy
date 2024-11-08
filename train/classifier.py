@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -30,82 +31,126 @@ class Encoder2DClassifier(nn.Module):
 # Training function
 def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader,
                              val_loader: DataLoader, num_epochs: int, learning_rate: float,
-                             device: torch.device, weight_decay=1e-5):
+                             device: torch.device, weight_decay=1e-5, resume_from=None):
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.NAdam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=1)
+
+    # Initialize training state
+    start_epoch = 0
     best_val_loss = float('inf')
     patience = 5
     counter = 0
+    
+    # Resume from checkpoint if specified
+    if resume_from and os.path.exists(resume_from):
+        print(f"Loading checkpoint from {resume_from}")
+        checkpoint = torch.load(resume_from)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint['epoch']
+        best_val_loss = checkpoint['best_val_loss']
+        counter = checkpoint['early_stop_counter']
+
+    # Calculate total steps for OneCycleLR
+    total_steps = len(train_loader) * (num_epochs - start_epoch)
+    
     writer = SummaryWriter()
     model.to(device)
-    for epoch in range(num_epochs):
-        model.train()
-        train_loss = 0
-        train_correct = 0
-        optimizer.zero_grad()
-        model.zero_grad()
-        for batch_idx, (inputs, labels) in enumerate(train_loader):
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs)
-            batch_loss = criterion(outputs, labels) / ACCUMULATION_STEPS
-            _, predicted = outputs.max(1)
-            batch_correct = predicted.eq(labels).sum().item()
-            train_correct += batch_correct
-            train_loss += batch_loss.item()
-            writer.add_scalar('Batch Loss/train', batch_loss/BATCH_SIZE, batch_idx+(len(train_loader)*(epoch)))
-            writer.add_scalar('Batch Accuracy/train', (100*batch_correct)/BATCH_SIZE, batch_idx+(len(train_loader)*(epoch)))
-
-            batch_loss.backward()
-
-            if (batch_idx + 1) % ACCUMULATION_STEPS == 0:
-                optimizer.step()
-                model.zero_grad()
-
-        avg_train_loss = train_loss / (len(train_loader)*BATCH_SIZE)
-        train_accuracy = 100. * train_correct / TRAIN_TOTAL
-
-        # Validation
-        model.eval()
-        val_loss = 0
-        val_correct = 0
-        val_total = 0
-        with torch.no_grad():
-            for inputs, labels in val_loader:
+    
+    try:
+        for epoch in range(start_epoch, num_epochs):
+            model.train()
+            train_loss = 0
+            train_correct = 0
+            optimizer.zero_grad()
+            model.zero_grad()
+            
+            for batch_idx, (inputs, labels) in enumerate(train_loader):
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs)
-                loss = criterion(outputs, labels)
-                val_loss += loss.item()
+                batch_loss = criterion(outputs, labels) / ACCUMULATION_STEPS
                 _, predicted = outputs.max(1)
-                val_total += labels.size(0)
-                val_correct += predicted.eq(labels).sum().item()
+                batch_correct = predicted.eq(labels).sum().item()
+                train_correct += batch_correct
+                train_loss += batch_loss.item()
+                writer.add_scalar('Batch Loss/train', batch_loss/BATCH_SIZE, batch_idx+(len(train_loader)*(epoch)))
+                writer.add_scalar('Batch Accuracy/train', (100*batch_correct)/BATCH_SIZE, batch_idx+(len(train_loader)*(epoch)))
+                writer.add_scalar('Learning Rate', optimizer.param_groups[0]['lr'], batch_idx+(len(train_loader)*epoch))
 
-        avg_val_loss = val_loss / (len(val_loader)*BATCH_SIZE)
-        val_accuracy = 100. * val_correct / val_total
-        scheduler.step(avg_val_loss)
+                batch_loss.backward()
 
-        writer.add_scalar('Loss/train', avg_train_loss, epoch)
-        writer.add_scalar('Loss/val', avg_val_loss, epoch)
-        writer.add_scalar('Accuracy/train', train_accuracy, epoch)
-        writer.add_scalar('Accuracy/val', val_accuracy, epoch)
-        writer.add_scalar('Learning Rate', optimizer.param_groups[0]['lr'], epoch)
+                if (batch_idx + 1) % ACCUMULATION_STEPS == 0:
+                    optimizer.step()
+                    model.zero_grad()
 
-        print(f"Epoch {epoch + 1} - Train Loss: {avg_train_loss:.4f}, "
-              f"Train Accuracy: {train_accuracy:.2f}%, "
-              f"Val Loss: {avg_val_loss:.4f}, "
-              f"Val Accuracy: {val_accuracy:.2f}%")
+            avg_train_loss = train_loss / (len(train_loader)*BATCH_SIZE)
+            train_accuracy = 100. * train_correct / TRAIN_TOTAL
 
-        # Early stopping check
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            counter = 0
-            torch.save(model.state_dict(), 'best_model.pth')
-        else:
-            counter += 1
-            if counter >= patience:
-                print(f"Early stopping triggered after {epoch + 1} epochs")
-                break
-    writer.close()
+            # Validation
+            model.eval()
+            val_loss = 0
+            val_correct = 0
+            val_total = 0
+            with torch.no_grad():
+                for inputs, labels in val_loader:
+                    inputs, labels = inputs.to(device), labels.to(device)
+                    outputs = model(inputs)
+                    loss = criterion(outputs, labels)
+                    val_loss += loss.item()
+                    _, predicted = outputs.max(1)
+                    val_total += labels.size(0)
+                    val_correct += predicted.eq(labels).sum().item()
+
+            avg_val_loss = val_loss / (len(val_loader)*BATCH_SIZE)
+            val_accuracy = 100. * val_correct / val_total
+
+            writer.add_scalar('Loss/train', avg_train_loss, epoch)
+            writer.add_scalar('Loss/val', avg_val_loss, epoch)
+            writer.add_scalar('Accuracy/train', train_accuracy, epoch)
+            writer.add_scalar('Accuracy/val', val_accuracy, epoch)
+
+            print(f"Epoch {epoch + 1} - Train Loss: {avg_train_loss:.4f}, "
+                  f"Train Accuracy: {train_accuracy:.2f}%, "
+                  f"Val Loss: {avg_val_loss:.4f}, "
+                  f"Val Accuracy: {val_accuracy:.2f}%")
+
+            # Save checkpoint every epoch
+            checkpoint = {
+                'epoch': epoch + 1,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'best_val_loss': best_val_loss,
+                'early_stop_counter': counter,
+            }
+            torch.save(checkpoint, 'checkpoint.pth')
+            scheduler.step(avg_val_loss)
+
+            # Early stopping check
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                counter = 0
+                torch.save(model.state_dict(), 'best_model.pth')
+            else:
+                counter += 1
+                if counter >= patience:
+                    print(f"Early stopping triggered after {epoch + 1} epochs")
+                    break
+
+    except KeyboardInterrupt:
+        print("\nTraining interrupted. Saving checkpoint...")
+        checkpoint = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'best_val_loss': best_val_loss,
+            'early_stop_counter': counter,
+        }
+        torch.save(checkpoint, 'interrupt_checkpoint.pth')
+        print("Checkpoint saved. You can resume training using this checkpoint.")
+        
+    finally:
+        writer.close()
 
 # Example usage
 if __name__ == "__main__":
@@ -113,6 +158,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Train Encoder2D Classifier')
     parser.add_argument('--dataset', type=str, required=True, 
                         choices=DATASETS.keys(), help='Name of the dataset to use')
+    parser.add_argument('--resume', type=str, help='Path to checkpoint to resume from')
     args = parser.parse_args()
 
     # Load the specified dataset
@@ -129,4 +175,5 @@ if __name__ == "__main__":
     device = torch.device("cuda")
     weight_decay = 1e-5  
     train_encoder_classifier(model, train_loader, val_loader, num_epochs=30,
-                             learning_rate=1e-4, device=device, weight_decay=weight_decay)
+                             learning_rate=1e-4, device=device, weight_decay=weight_decay,
+                             resume_from=args.resume)

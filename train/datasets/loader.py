@@ -75,13 +75,13 @@ train_transform = transforms.Compose([
     transforms.ConvertImageDtype(torch.uint8),
     transforms.AutoAugment(),
     transforms.ConvertImageDtype(torch.float32),
-    transforms.Resize((128, 128)),
+    transforms.Resize((160, 160)),
     transforms.Normalize([0.5538, 0.5341, 0.5063], [0.2364, 0.2356, 0.2381])
 ])
 val_transform = transforms.Compose([
 
     transforms.ToTensor(),
-    transforms.Resize((128, 128)),
+    transforms.Resize((160, 160)),
     transforms.Normalize([.5538, 0.5341, 0.5063], [0.2364, 0.2356, 0.2381])
 
 ])

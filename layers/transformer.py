@@ -6,22 +6,22 @@ from torch import nn
 from torch.nn import Module, Conv2d, Conv3d, Conv1d, LayerNorm, Dropout
 from torch.nn.functional import interpolate
 
-from generics import ConvType, ConvMultiHeadNAType
-from layers.attention import ConvMultiHeadNA1D, ConvMultiHeadNA2D, ConvMultiHeadNA3D
+from generics import ConvType, MultiScaleMultiHeadNAType
+from layers.attention import MulitScaleMultiHeadNA1D, MulitScaleMultiHeadNA2D, MulitScaleMultiHeadNA3D
 from params import ConvParams, MultiHeadAttentionParams
 from .norms import LayerNorm2d, LayerNorm3d
 from .positional_encoding import positional_encoding
 
 
-class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNAType]):
-    multi_head_attention_type: Type[ConvMultiHeadNAType]
+class MSNATTransformer(ABC, Module, Generic[ConvType, MultiScaleMultiHeadNAType]):
+    multi_head_attention_type: Type[MultiScaleMultiHeadNAType]
     conv_type: Type[ConvType]
     norm_type: Type[Module]
 
     def __init__(self, in_channels: int, out_channels: int,
                  attention_params: MultiHeadAttentionParams,
                  scale_factor: Optional[int] = 1, **kwargs):
-        super(ConvNATTransformer, self).__init__()
+        super(MSNATTransformer, self).__init__()
         self.multi_head_attention = self.multi_head_attention_type(
             **attention_params.__dict__)
         self.final_conv = nn.Sequential(self.conv_type(kernel_size=1,
@@ -62,20 +62,20 @@ class ConvNATTransformer(ABC, Module, Generic[ConvType, ConvMultiHeadNAType]):
         return x
 
 
-class ConvNATTransformer1D(ConvNATTransformer[Conv1d, ConvMultiHeadNA1D]):
-    multi_head_attention_type = ConvMultiHeadNA1D
+class MSNATTransformer1D(MSNATTransformer[Conv1d, MulitScaleMultiHeadNA1D]):
+    multi_head_attention_type = MulitScaleMultiHeadNA1D
     conv_type = Conv1d
     norm_type = LayerNorm
 
 
-class ConvNATTransformer2D(ConvNATTransformer[Conv2d, ConvMultiHeadNA2D]):
-    multi_head_attention_type = ConvMultiHeadNA2D
+class MSNATTransformer2D(MSNATTransformer[Conv2d, MulitScaleMultiHeadNA2D]):
+    multi_head_attention_type = MulitScaleMultiHeadNA2D
     conv_type = Conv2d
     norm_type = LayerNorm2d
 
 
-class ConvNATTransformer3D(ConvNATTransformer[Conv3d, ConvMultiHeadNA3D]):
-    multi_head_attention_type = ConvMultiHeadNA3D
+class MSNATTransformer3D(MSNATTransformer[Conv3d, MulitScaleMultiHeadNA3D]):
+    multi_head_attention_type = MulitScaleMultiHeadNA3D
     conv_type = Conv3d
     norm_type = LayerNorm3d
 

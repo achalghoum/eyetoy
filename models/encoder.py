@@ -9,7 +9,7 @@ from torchvision.models.convnext import LayerNorm2d
 from generics import ConvNATTransformerType, TransformerStackType
 from layers.norms import LayerNorm3d
 from layers.positional_encoding import positional_encoding
-from layers.transformer import ConvNATTransformer1D, ConvNATTransformer2D, ConvNATTransformer3D, \
+from layers.transformer import MSNATTransformer1D, MSNATTransformer2D, MSNATTransformer3D, \
     GlobalAttentionTransformer
 from params import ConvParams
 from params import DEFAULT_IMG_ENCODER_PARAMS, TransformerParams
@@ -32,18 +32,18 @@ class TransformerStack(Module, Generic[ConvNATTransformerType]):
         return x
 
 
-class TransformerStack1D(TransformerStack[ConvNATTransformer1D]):
-    transformer_type = ConvNATTransformer1D
+class TransformerStack1D(TransformerStack[MSNATTransformer1D]):
+    transformer_type = MSNATTransformer1D
 ##
 
-class TransformerStack2D(TransformerStack[ConvNATTransformer2D]):
-    transformer_type = ConvNATTransformer2D
+class TransformerStack2D(TransformerStack[MSNATTransformer2D]):
+    transformer_type = MSNATTransformer2D
     norm_type = LayerNorm2d
     conv_type = Conv2d
 
 
-class TransformerStack3D(TransformerStack[ConvNATTransformer3D]):
-    transformer_type = ConvNATTransformer3D
+class TransformerStack3D(TransformerStack[MSNATTransformer3D]):
+    transformer_type = MSNATTransformer3D
     norm_type = LayerNorm3d
     conv_type = Conv3d
 

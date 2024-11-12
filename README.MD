@@ -1,1 +1,1 @@
-# EyeToy (Convolutional Neighborhood Attention)
+# EyeToy (Biologically Inspired Neighborhood Attention)

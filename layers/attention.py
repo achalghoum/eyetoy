@@ -9,7 +9,7 @@ from torch import nn
 from torch.nn import Module, Conv2d, Conv3d, ConvTranspose2d, ConvTranspose3d, \
     Conv1d, Dropout
 
-from generics import ConvType, NAType, SharedConvNAType
+from generics import ConvType, NAType, SharedScaleNAType
 from params import ConvParams, NeighborhoodAttentionParams, HeadParams
 
 natten.use_fused_na()
@@ -103,7 +103,7 @@ class NA3DTransposed(NA[ConvTranspose3d]):
     atten_func = staticmethod(na3d)
 
 
-class SharedConvNA(ABC, Module, Generic[ConvType, NAType]):
+class SharedScaleNA(ABC, Module, Generic[ConvType, NAType]):
     conv_type: Type[ConvType]
     na_type: Type[NAType]
 
@@ -125,23 +125,23 @@ class SharedConvNA(ABC, Module, Generic[ConvType, NAType]):
         return (na(shared_features) for na in self.nas)
 
 
-class SharedConvNA1D(SharedConvNA[Conv1d, NA1D]):
+class SharedScaleNA1D(SharedScaleNA[Conv1d, NA1D]):
     conv_type = Conv1d
     na_type = NA1D
 
 
-class SharedConvNA2D(SharedConvNA[Conv2d, NA2D]):
+class SharedScaleNA2D(SharedScaleNA[Conv2d, NA2D]):
     conv_type = Conv2d
     na_type = NA2D
 
 
-class SharedConvNA3D(SharedConvNA[Conv3d, NA3D]):
+class SharedScaleNA3D(SharedScaleNA[Conv3d, NA3D]):
     conv_type = Conv3d
     na_type = NA3D
 
 
-class ConvMultiHeadNA(ABC, Module, Generic[ConvType, SharedConvNAType]):
-    conv_attn_type: Type[SharedConvNAType]
+class MulitScaleMultiHeadNA(ABC, Module, Generic[ConvType, SharedScaleNAType]):
+    conv_attn_type: Type[SharedScaleNAType]
     conv_type: Type[ConvType]
 
     def __init__(self,
@@ -185,16 +185,16 @@ class ConvMultiHeadNA(ABC, Module, Generic[ConvType, SharedConvNAType]):
         return self.final_conv(combined_output)
 
 
-class ConvMultiHeadNA1D(ConvMultiHeadNA[Conv1d, SharedConvNA1D]):
-    conv_attn_type = SharedConvNA1D
+class MulitScaleMultiHeadNA1D(MulitScaleMultiHeadNA[Conv1d, SharedScaleNA1D]):
+    conv_attn_type = SharedScaleNA1D
     conv_type = Conv1d
 
 
-class ConvMultiHeadNA2D(ConvMultiHeadNA[Conv2d, SharedConvNA2D]):
-    conv_attn_type = SharedConvNA2D
+class MulitScaleMultiHeadNA2D(MulitScaleMultiHeadNA[Conv2d, SharedScaleNA2D]):
+    conv_attn_type = SharedScaleNA2D
     conv_type = Conv2d
 
 
-class ConvMultiHeadNA3D(ConvMultiHeadNA[Conv3d, SharedConvNA3D]):
-    conv_attn_type = SharedConvNA3D
+class MulitScaleMultiHeadNA3D(MulitScaleMultiHeadNA[Conv3d, SharedScaleNA3D]):
+    conv_attn_type = SharedScaleNA3D
     conv_type = Conv3d

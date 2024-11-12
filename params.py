@@ -138,7 +138,7 @@ DEFAULT_IMG_ENCODER_PARAMS = VisionTransformerParams(
         # 4 layers with 368 channels
         create_conv_nat_params(256, 512, second_attention_params, second_size_convs, num_heads=2,
                                scale_factor=2),
-        create_conv_nat_params(512, 768, final_attention_params, second_size_convs, num_heads=2,
+        create_conv_nat_params(512, 768, second_attention_params, second_size_convs, num_heads=2,
                                scale_factor=2),
     ],
     global_attention_params=GlobalAttentionTransformerParams(

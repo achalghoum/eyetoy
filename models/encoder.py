@@ -6,7 +6,7 @@ from torch import nn
 from torch.nn import Module, Conv1d, Conv2d, Conv3d, LayerNorm
 from torchvision.models.convnext import LayerNorm2d
 
-from generics import ConvNATTransformerType, TransformerStackType
+from generics import MSNATTransformerType, TransformerStackType
 from layers.norms import LayerNorm3d
 from layers.positional_encoding import positional_encoding
 from layers.transformer import MSNATTransformer1D, MSNATTransformer2D, MSNATTransformer3D, \
@@ -15,8 +15,8 @@ from params import ConvParams
 from params import DEFAULT_IMG_ENCODER_PARAMS, TransformerParams
 
 
-class TransformerStack(Module, Generic[ConvNATTransformerType]):
-    transformer_type: Type[ConvNATTransformerType]
+class TransformerStack(Module, Generic[MSNATTransformerType]):
+    transformer_type: Type[MSNATTransformerType]
     norm_type: Type[Module]
 
     def __init__(self, transformer_params: List[TransformerParams]):
@@ -74,7 +74,7 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
                  global_attention_dropout: float, num_global_attention_layers: int,
                  initial_conv_params: ConvParams):
         super(Encoder, self).__init__()
-        self.initial_conv = self.conv_type(**initial_conv_params.__dict__)
+        self.initial_proj = self.conv_type(**initial_conv_params.__dict__)
         self.transformer_stack = self.transformer_stack_type(
             transformer_params)
         self.d_model = transformer_params[-1].out_channels
@@ -97,7 +97,7 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x = self.initial_conv(x)
+        x = self.initial_proj(x)
         x = x + positional_encoding(x, d=x.shape[1]) * 0.1
         transformed_input = self.transformer_stack(x)
         output, context_token = self.global_attention(transformed_input)
@@ -123,7 +123,7 @@ class SimpleEncoder2D(Module):
     def __init__(self, transformer_params: List[TransformerParams],
                  initial_conv_params: ConvParams, **kwargs):
         super(SimpleEncoder2D, self).__init__()
-        self.initial_conv = Conv2d(**initial_conv_params.__dict__)
+        self.initial_proj = Conv2d(**initial_conv_params.__dict__)
         self.transformer_stack = TransformerStack2D(
             transformer_params)
         self.d_model = transformer_params[-1].out_channels
@@ -143,7 +143,7 @@ class SimpleEncoder2D(Module):
                     nn.init.constant_(m.bias, 0)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-        x = self.initial_conv(x)
+        x = self.initial_proj(x)
         x = x + positional_encoding(x, d=x.shape[1]) * 0.1
         x = self.layer_norm(self.transformer_stack(x))
         context_token = self.global_avg_pool(x)

@@ -37,7 +37,7 @@ class MultiHeadAttentionParams:
     intermediate_channels: int
     out_channels: int
     final_conv_params: ConvParams
-    scale_factor: int
+    scale_factor: float
 
 
 @dataclass
@@ -65,7 +65,7 @@ class GlobalAttentionTransformerParams:
 
 
 @dataclass
-class VisionTransformerParams:
+class EncoderParams:
     initial_conv_params: ConvParams
     transformer_params: List[TransformerParams]
     global_attention_params: GlobalAttentionTransformerParams
@@ -76,7 +76,7 @@ class VisionTransformerParams:
 
 # Helper function to create ConvNATTransformerParams
 def create_conv_nat_params(in_channels, out_channels, attn_kernel_sizes, conv_params, num_heads,
-                           scale_factor=1, min_intermediate_channels=32, conv_groups=32):
+                           scale_factor=1., min_intermediate_channels=32, conv_groups=32):
     head_params = []
     intermediate_channels = max(in_channels // len(conv_params) // num_heads,
                                 min_intermediate_channels)
@@ -113,7 +113,7 @@ def create_conv_nat_params(in_channels, out_channels, attn_kernel_sizes, conv_pa
     )
 
 
-first_size_convs = [ConvParams(kernel_size=3, stride=1, padding="same"),
+first_size_convs = [ConvParams(kernel_size=1, stride=1, padding="same"),
                     ConvParams(kernel_size=3, stride=3, padding="valid"),
                     ConvParams(kernel_size=5, stride=5, padding="valid"),
                     ConvParams(kernel_size=7, stride=7, padding="valid")]
@@ -126,20 +126,20 @@ first_attention_params = [17, 13, 11, 7]
 second_attention_params = [7, 5, 3, 3]
 final_attention_params = [7]
 # Create the specific configuration
-DEFAULT_IMG_ENCODER_PARAMS = VisionTransformerParams(
+DEFAULT_IMG_ENCODER_PARAMS = EncoderParams(
     initial_conv_params=ConvParams(kernel_size=3, padding="same", stride=1, in_channels=3,
                                    out_channels=32),
     transformer_params=[
         # First layers with 32 channels
         create_conv_nat_params(32, 128, first_attention_params, first_size_convs, num_heads=2,
-                               scale_factor=2),
+                               scale_factor=0.5),
         create_conv_nat_params(128, 256, first_attention_params, first_size_convs, num_heads=2,
-                               scale_factor=2),
+                               scale_factor=0.5),
         # 4 layers with 368 channels
         create_conv_nat_params(256, 512, second_attention_params, second_size_convs, num_heads=2,
-                               scale_factor=2),
+                               scale_factor=0.5),
         create_conv_nat_params(512, 768, second_attention_params, second_size_convs, num_heads=2,
-                               scale_factor=2),
+                               scale_factor=0.5),
     ],
     global_attention_params=GlobalAttentionTransformerParams(
         d_model=768,

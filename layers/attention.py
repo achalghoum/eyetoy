@@ -169,8 +169,7 @@ class MulitScaleMultiHeadNA(ABC, Module, Generic[ConvType, SharedScaleNAType]):
     def _get_scale_fn(self, scale_factor):
         if scale_factor == 1:
             return nn.Identity()
-        factor = 1.0 / float(scale_factor)
-        return lambda x: torch.nn.functional.interpolate(x, scale_factor=factor,
+        return lambda x: torch.nn.functional.interpolate(x, scale_factor=scale_factor,
                                                          mode='bilinear')
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

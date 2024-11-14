@@ -20,7 +20,7 @@ class MSNATTransformer(ABC, Module, Generic[ConvType, MultiScaleMultiHeadNAType]
 
     def __init__(self, in_channels: int, out_channels: int,
                  attention_params: MultiHeadAttentionParams,
-                 scale_factor: Optional[int] = 1, **kwargs):
+                 scale_factor: Optional[float] = 1., **kwargs):
         super(MSNATTransformer, self).__init__()
         self.multi_head_attention = self.multi_head_attention_type(
             **attention_params.__dict__)
@@ -47,7 +47,7 @@ class MSNATTransformer(ABC, Module, Generic[ConvType, MultiScaleMultiHeadNAType]
                                        padding="same") if self.in_channels != self.out_channels else nn.Identity()
     def _set_rescale(self):
         if self.scale_factor != 1:
-            self.rescale = lambda x: interpolate(x, scale_factor=1.0 / float(self.scale_factor),
+            self.rescale = lambda x: interpolate(x, scale_factor= self.scale_factor,
                                          mode="bilinear")
         else:
             self.rescale = lambda x: x
@@ -79,86 +79,130 @@ class MSNATTransformer3D(MSNATTransformer[Conv3d, MulitScaleMultiHeadNA3D]):
     conv_type = Conv3d
     norm_type = LayerNorm3d
 
-
-class GlobalAttentionTransformer(Module):
-
-    def __init__(self, d_model: int, num_heads: int, num_register_tokens: int = 4,
-                 dropout: float = 0.1, use_input_context_token: bool = False,
-                 use_input_register_tokens: bool = False):
-        super(GlobalAttentionTransformer, self).__init__()
+class GlobalAttentionTransformer(nn.Module):
+    def __init__(
+        self,
+        d_model: int,
+        num_heads: int,
+        num_register_tokens: int = 4,
+        dropout: float = 0.1,
+        use_input_context_token: bool = False,
+        use_input_register_tokens: bool = False
+    ):
+        super().__init__()
         self.d_model = d_model
         self.num_heads = num_heads
         self.num_register_tokens = num_register_tokens
         self.use_input_context_token = use_input_context_token
         self.use_input_register_tokens = use_input_register_tokens
+
+        # Initialize learnable tokens if not provided as input
         if not use_input_context_token:
             self.context_token = nn.Parameter(torch.randn(1, 1, d_model))
         if not use_input_register_tokens:
-            self.register_tokens = nn.Parameter(
-                torch.randn(1, num_register_tokens, d_model))
+            self.register_tokens = nn.Parameter(torch.randn(1, num_register_tokens, d_model))
 
-        self.attention = nn.MultiheadAttention(d_model, num_heads, dropout=dropout,
-                                               batch_first=True)
+        # Core transformer components
+        self.attention = nn.MultiheadAttention(
+            d_model, 
+            num_heads, 
+            dropout=dropout, 
+            batch_first=True
+        )
         self.layernorm1 = nn.LayerNorm(d_model)
         self.layernorm2 = nn.LayerNorm(d_model)
-
-        # Add feed-forward network
+        
+        # Feed-forward network with expansion factor of 4
         self.ffn = nn.Sequential(
             nn.Linear(d_model, 4 * d_model),
             nn.GELU(),
             nn.Linear(4 * d_model, d_model)
         )
-
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, context_token: Optional[torch.Tensor] = None,
-                register_tokens: Optional[torch.Tensor] = None) -> Tuple[
-        torch.Tensor, torch.Tensor, torch.Tensor]:
-        batch_size = x.shape[0]
-        original_shape = x.shape
-        x_flat = (x).flatten(2).transpose(1, 2)
+    def create_attention_mask(self, seq_len: int, device: torch.device) -> torch.Tensor:
+        """Creates the attention mask for the transformer."""
+        mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=device)
+        
+        # Context token can attend to all tokens
+        mask[0, :] = False
+        
+        # Register tokens can attend to all tokens
+        mask[1:1 + self.num_register_tokens, :] = False
+        
+        # All tokens can attend to context and register tokens
+        mask[1 + self.num_register_tokens:, :1 + self.num_register_tokens] = not self.use_input_context_token
+        
+        # Create diagonal mask for remaining tokens
+        mask[1 + self.num_register_tokens:, 1 + self.num_register_tokens:] = ~torch.eye(mask.size(0) - (1 + self.num_register_tokens), dtype=torch.bool, device=mask.device)
+        return mask
+
+    def initialize_tokens(self, batch_size: int, context_token: Optional[torch.Tensor], register_tokens: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Initialize context and register tokens."""
+        # Handle context token
         if self.use_input_context_token:
             if context_token is None:
                 raise ValueError("Context token expected but not provided")
         else:
             context_token = self.context_token.expand(batch_size, -1, -1)
 
-        if self.use_input_context_token:
+        # Handle register tokens
+        if self.use_input_register_tokens:
             if register_tokens is None:
                 raise ValueError("Register tokens expected and not provided")
         else:
             register_tokens = self.register_tokens.expand(batch_size, -1, -1)
-        tokens = torch.cat(
-            [context_token, register_tokens], dim=1)
+
+        # Concatenate tokens
+        tokens = torch.cat([context_token, register_tokens], dim=1)
+        
+        # Add positional encoding if not using input context token
         if not self.use_input_context_token:
             tokens = tokens + positional_encoding(tokens, d=self.d_model)
-        x_w_tokens = self.layernorm1(torch.cat(
-            [tokens, x_flat], dim=1))
 
-        seq_len = x_w_tokens.size(1)
-        mask = torch.ones(seq_len, seq_len, dtype=torch.bool, device=x.device)
-        mask[0, :] = False  # Context token can attend to all tokens
-        # Register tokens can attend to all tokens
-        mask[1:1 + self.num_register_tokens, :] = False
-        # All tokens can attend to context and register tokens
-        mask[1 + self.num_register_tokens:,
-        :1 + self.num_register_tokens] = not self.use_input_context_token
-        # Other tokens cannot attend to each other
-        mask[1 + self.num_register_tokens:,
-        1 + self.num_register_tokens:] = self.use_input_context_token
+        return tokens
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        context_token: Optional[torch.Tensor] = None,
+        register_tokens: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size = x.shape[0]
+        original_shape = x.shape
+        
+        # Flatten spatial dimensions
+        x_flat = x.flatten(2).transpose(1, 2)
+
+        # Initialize tokens
+        tokens = self.initialize_tokens(batch_size, context_token, register_tokens)
+
+        # Concatenate tokens with input and apply layer norm
+        x_w_tokens = self.layernorm1(torch.cat([tokens, x_flat], dim=1))
+        
+        # Create attention mask
+        mask = self.create_attention_mask(x_w_tokens.size(1), x.device)
+
+        # Multi-head attention
         attn_output, _ = self.attention(
-            key=x_w_tokens, query=x_w_tokens, value=x_w_tokens, attn_mask=mask)
-        # Apply first residual connection and layer normalization
-        attn_output = attn_output + x_w_tokens
+            query=x_w_tokens,
+            key=x_w_tokens,
+            value=x_w_tokens,
+            attn_mask=mask
+        )
 
-        # Apply second residual connection and layer normalization
+        # First residual connection
+        attn_output = attn_output + x_w_tokens
+        
+        # FFN and second residual connection
         attn_output = self.ffn(self.layernorm2(attn_output)) + attn_output
 
+        # Split output into components
         context_token_out = attn_output[:, 0:1, :]
         register_tokens_out = attn_output[:, 1:1 + self.num_register_tokens, :]
         feature_map_out = attn_output[:, 1 + self.num_register_tokens:, :]
-
-        feature_map_out = feature_map_out.transpose(
-            1, 2).reshape(original_shape)
+        
+        # Reshape feature map back to original dimensions
+        feature_map_out = feature_map_out.transpose(1, 2).reshape(original_shape)
 
         return feature_map_out, context_token_out, register_tokens_out

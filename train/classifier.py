@@ -33,7 +33,7 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                              val_loader: DataLoader, num_epochs: int, learning_rate: float,
                              device: torch.device, weight_decay=1e-5, resume_from=None):
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, betas=(0.95,0.999))
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=1)
 
     # Initialize training state

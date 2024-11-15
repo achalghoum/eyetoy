@@ -71,11 +71,10 @@ class EncoderParams:
     global_attention_params: GlobalAttentionTransformerParams
     input_channels: int
     output_channels: int
-    num_classes: int
 
 
 # Helper function to create ConvNATTransformerParams
-def create_conv_nat_params(in_channels, out_channels, attn_kernel_sizes, conv_params, num_heads,
+def create_ms_nat_params(in_channels, out_channels, attn_kernel_sizes, conv_params, num_heads,
                            scale_factor=1., min_intermediate_channels=32, conv_groups=32):
     head_params = []
     intermediate_channels = max(in_channels // len(conv_params) // num_heads,
@@ -131,14 +130,14 @@ DEFAULT_IMG_ENCODER_PARAMS = EncoderParams(
                                    out_channels=32),
     transformer_params=[
         # First layers with 32 channels
-        create_conv_nat_params(32, 128, first_attention_params, first_size_convs, num_heads=2,
+        create_ms_nat_params(32, 128, first_attention_params, first_size_convs, num_heads=2,
                                scale_factor=0.5),
-        create_conv_nat_params(128, 256, first_attention_params, first_size_convs, num_heads=2,
+        create_ms_nat_params(128, 256, first_attention_params, first_size_convs, num_heads=2,
                                scale_factor=0.5),
         # 4 layers with 368 channels
-        create_conv_nat_params(256, 512, second_attention_params, second_size_convs, num_heads=2,
+        create_ms_nat_params(256, 512, second_attention_params, second_size_convs, num_heads=2,
                                scale_factor=0.5),
-        create_conv_nat_params(512, 768, second_attention_params, second_size_convs, num_heads=2,
+        create_ms_nat_params(512, 768, second_attention_params, second_size_convs, num_heads=2,
                                scale_factor=0.5),
     ],
     global_attention_params=GlobalAttentionTransformerParams(
@@ -149,5 +148,4 @@ DEFAULT_IMG_ENCODER_PARAMS = EncoderParams(
     ),
     input_channels=3,
     output_channels=768,
-    num_classes=1000  # Assuming 1000 classes, adjust as needed
 )

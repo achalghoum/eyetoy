@@ -11,7 +11,8 @@ Jinja2==3.1.4
 Markdown==3.7
 MarkupSafe==3.0.1
 mpmath==1.3.0
-natten==0.17.1+torch240cu124 --find-links https://shi-labs.com/natten/wheels/
+--find-links https://shi-labs.com/natten/wheels/
+natten==0.17.3+torch240cu124
 networkx==3.4
 numpy==2.1.2
 nvidia-cublas-cu12==12.1.3.1

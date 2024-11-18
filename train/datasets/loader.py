@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
-from torchvision.datasets import Caltech256, CIFAR10, CIFAR100
+from torchvision.datasets import Caltech256, CIFAR10, CIFAR100, Flowers102
 
 
 class CalTech256Split(Dataset):
@@ -55,6 +55,21 @@ class CIFAR10Split(Dataset):
         return image, class_id
 
 
+class Flowers102CIFAR10Split(Dataset):
+    def __init__(self, root_dir, transform=None, download=False, split="train"):
+        self.dataset = Flowers102(
+            root=root_dir, transform=transform, download=download,split=split)
+        self.transform = transform
+        self.num_classes = 10
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        image, class_id = self.dataset[idx]
+        return image, class_id
+
+
 class CIFAR100Split(Dataset):  # New class for CIFAR-100
     def __init__(self, root_dir, transform=None, download=False, train=True):
         self.dataset = CIFAR100(
@@ -73,29 +88,29 @@ class CIFAR100Split(Dataset):  # New class for CIFAR-100
 train_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.ConvertImageDtype(torch.uint8),
-    transforms.AutoAugment(),
+    transforms.RandAugment(),
     transforms.ConvertImageDtype(torch.float32),
-    transforms.Resize((160, 160)),
+    transforms.Resize((224, 224)),
     transforms.Normalize([0.5538, 0.5341, 0.5063], [0.2364, 0.2356, 0.2381])
 ])
 val_transform = transforms.Compose([
 
     transforms.ToTensor(),
-    transforms.Resize((160, 160)),
+    transforms.Resize((224, 224)),
     transforms.Normalize([.5538, 0.5341, 0.5063], [0.2364, 0.2356, 0.2381])
 
 ])
 cifar_train_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.ConvertImageDtype(torch.uint8),
-    transforms.AutoAugment(),
+    transforms.RandAugment(),
     transforms.ConvertImageDtype(torch.float32),
-    transforms.Resize((128, 128)),
+    transforms.Resize((224, 224)),
     transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2470, 0.2435, 0.2616])
 ])
 cifar_val_transform = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Resize((128, 128)),
+    transforms.Resize((224, 224)),
     transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2470, 0.2435, 0.2616])
 
 ])

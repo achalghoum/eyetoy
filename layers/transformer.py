@@ -137,7 +137,7 @@ class GlobalAttentionTransformer(nn.Module):
         mask[1 + self.num_register_tokens:, 1 + self.num_register_tokens:] = ~torch.eye(mask.size(0) - (1 + self.num_register_tokens), dtype=torch.bool, device=mask.device)
         return mask
 
-    def initialize_tokens(self, batch_size: int, context_token: Optional[torch.Tensor], register_tokens: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+    def initialize_tokens(self, batch_size: int, context_token: Optional[torch.Tensor], register_tokens: Optional[torch.Tensor]) -> torch.Tensor:
         """Initialize context and register tokens."""
         # Handle context token
         if self.use_input_context_token:

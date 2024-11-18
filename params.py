@@ -113,9 +113,9 @@ def create_ms_nat_params(in_channels, out_channels, attn_kernel_sizes, conv_para
 
 
 first_size_convs = [ConvParams(kernel_size=1, stride=1, padding="same"),
-                    ConvParams(kernel_size=3, stride=3, padding="valid"),
-                    ConvParams(kernel_size=5, stride=5, padding="valid"),
-                    ConvParams(kernel_size=7, stride=7, padding="valid")]
+                    ConvParams(kernel_size=2, stride=2, padding="valid"),
+                    ConvParams(kernel_size=4, stride=4, padding="valid"),
+                    ConvParams(kernel_size=8, stride=8, padding="valid")]
 second_size_convs = [ConvParams(kernel_size=1, stride=1, padding="same"),
                      ConvParams(kernel_size=2, stride=2, padding="valid"),
                      ConvParams(kernel_size=3, stride=3, padding="valid"),
@@ -130,14 +130,14 @@ DEFAULT_IMG_ENCODER_PARAMS = EncoderParams(
                                    out_channels=32),
     transformer_params=[
         # First layers with 32 channels
-        create_ms_nat_params(32, 128, first_attention_params, first_size_convs, num_heads=2,
+        create_ms_nat_params(32, 64, first_attention_params, first_size_convs, num_heads=2,
                                scale_factor=0.5),
-        create_ms_nat_params(128, 256, first_attention_params, first_size_convs, num_heads=2,
+        create_ms_nat_params(64, 128, first_attention_params, first_size_convs, num_heads=2,
                                scale_factor=0.5),
         # 4 layers with 368 channels
-        create_ms_nat_params(256, 512, second_attention_params, second_size_convs, num_heads=2,
+        create_ms_nat_params(128, 256, second_attention_params, second_size_convs, num_heads=2,
                                scale_factor=0.5),
-        create_ms_nat_params(512, 768, second_attention_params, second_size_convs, num_heads=2,
+        create_ms_nat_params(256, 512, second_attention_params, second_size_convs, num_heads=2,
                                scale_factor=0.5),
     ],
     global_attention_params=GlobalAttentionTransformerParams(

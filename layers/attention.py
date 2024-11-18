@@ -113,15 +113,15 @@ class SharedScaleNA(ABC, Module, Generic[ConvType, NAType]):
                  conv_params: ConvParams,
                  dropout: float = 0.2):
         super().__init__()
-        self.conv_params = conv_params
-        self.conv = self.conv_type(**conv_params.__dict__)
+        self.proj_params = conv_params
+        self.proj = self.conv_type(**conv_params.__dict__)
         self.nas = nn.ModuleList(
             [self.na_type(attn_params=params, channels=intermediate_channels) for params in
              attn_params])
         self.in_channels = in_channels
 
     def forward(self, x: torch.Tensor):
-        shared_features = self.conv(x)
+        shared_features = self.proj(x)
         return (na(shared_features) for na in self.nas)
 
 
@@ -160,7 +160,7 @@ class MulitScaleMultiHeadNA(ABC, Module, Generic[ConvType, SharedScaleNAType]):
         final_conv_params.kernel_size = 1
         final_conv_params.stride = 1
         final_conv_params.out_channels = out_channels
-        self.final_conv = self.conv_type(**final_conv_params.__dict__)
+        self.out_proj = self.conv_type(**final_conv_params.__dict__)
         self.intermediate_channels = intermediate_channels
         self.out_channels = out_channels
         self.scale_fn = self._get_scale_fn(scale_factor)
@@ -181,7 +181,7 @@ class MulitScaleMultiHeadNA(ABC, Module, Generic[ConvType, SharedScaleNAType]):
                                                                      mode='nearest') for head in self.attention_heads for output in head(x)], dim=1)
         combined_output = self.scale_fn(combined_output)
         # Apply final convolution
-        return self.final_conv(combined_output)
+        return self.out_proj(combined_output)
 
 
 class MulitScaleMultiHeadNA1D(MulitScaleMultiHeadNA[Conv1d, SharedScaleNA1D]):

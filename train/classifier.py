@@ -74,7 +74,7 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                 batch_correct = predicted.eq(labels).sum().item()
                 train_correct += batch_correct
                 train_loss += batch_loss.item()
-                writer.add_scalar('Batch Loss/train', batch_loss/BATCH_SIZE, batch_idx+(len(train_loader)*(epoch)))
+                writer.add_scalar('Batch Loss/train', batch_loss, batch_idx+(len(train_loader)*(epoch)))
                 writer.add_scalar('Batch Accuracy/train', (100*batch_correct)/BATCH_SIZE, batch_idx+(len(train_loader)*(epoch)))
                 writer.add_scalar('Learning Rate', optimizer.param_groups[0]['lr'], batch_idx+(len(train_loader)*epoch))
 
@@ -103,7 +103,7 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                     val_total += labels.size(0)
                     val_correct += predicted.eq(labels).sum().item()
 
-            avg_val_loss = val_loss / (len(val_loader)*BATCH_SIZE)
+            avg_val_loss = val_loss / (len(val_loader))
             val_accuracy = 100. * val_correct / val_total
 
             writer.add_scalar('Loss/train', avg_train_loss, epoch+1)

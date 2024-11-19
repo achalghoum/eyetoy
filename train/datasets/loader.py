@@ -55,12 +55,12 @@ class CIFAR10Split(Dataset):
         return image, class_id
 
 
-class Flowers102CIFAR10Split(Dataset):
+class Flowers102Split(Dataset):
     def __init__(self, root_dir, transform=None, download=False, split="train"):
         self.dataset = Flowers102(
             root=root_dir, transform=transform, download=download,split=split)
         self.transform = transform
-        self.num_classes = 10
+        self.num_classes = 102
 
     def __len__(self):
         return len(self.dataset)
@@ -129,9 +129,14 @@ cifar10_val = CIFAR10Split(root_dir=current_dir, transform=cifar_val_transform, 
 cifar100_train = CIFAR100Split(
     root_dir=current_dir, transform=cifar_train_transform, download=True)
 cifar100_val = CIFAR100Split(root_dir=current_dir, transform=cifar_val_transform)
+flowers102_train = Flowers102Split(root_dir=current_dir,transform=train_transform, download=True,split="train")
+flowers102_test = Flowers102Split(root_dir=current_dir,transform=train_transform, download=True,split="test")
+
+
 
 DATASETS: Dict[str, Tuple[Dataset, Dataset]] = {
     "caltech256": (caltech_256_train, caltech_256_val),
     "cifar10": (cifar10_train, cifar10_val),
-    "cifar100": (cifar100_train, cifar100_val)
+    "cifar100": (cifar100_train, cifar100_val),
+    "flowers102": (flowers102_train,flowers102_test)
 }

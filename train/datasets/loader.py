@@ -3,9 +3,9 @@ import os
 
 import torch
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, random_split
 from torchvision import transforms
-from torchvision.datasets import Caltech256, CIFAR10, CIFAR100, Flowers102
+from torchvision.datasets import Caltech256, CIFAR10, CIFAR100, Flowers102, Caltech101
 
 
 class CalTech256Split(Dataset):
@@ -105,12 +105,12 @@ cifar_train_transform = transforms.Compose([
     transforms.ConvertImageDtype(torch.uint8),
     transforms.RandAugment(),
     transforms.ConvertImageDtype(torch.float32),
-    transforms.Resize((224, 224)),
+    transforms.Resize((128, 128)),
     transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2470, 0.2435, 0.2616])
 ])
 cifar_val_transform = transforms.Compose([
     transforms.ToTensor(),
-    transforms.Resize((224, 224)),
+    transforms.Resize((128, 128)),
     transforms.Normalize([0.4914, 0.4822, 0.4465], [0.2470, 0.2435, 0.2616])
 
 ])
@@ -127,8 +127,8 @@ cifar10_train = CIFAR10Split(
     root_dir=current_dir, transform=cifar_train_transform, download=True, train=True)
 cifar10_val = CIFAR10Split(root_dir=current_dir, transform=cifar_val_transform, train=False)
 cifar100_train = CIFAR100Split(
-    root_dir=current_dir, transform=cifar_train_transform, download=True)
-cifar100_val = CIFAR100Split(root_dir=current_dir, transform=cifar_val_transform)
+    root_dir=current_dir, transform=cifar_train_transform, download=True,train=True)
+cifar100_val = CIFAR100Split(root_dir=current_dir, transform=cifar_val_transform, train=False)
 flowers102_train = Flowers102Split(root_dir=current_dir,transform=train_transform, download=True,split="train")
 flowers102_test = Flowers102Split(root_dir=current_dir,transform=train_transform, download=True,split="test")
 

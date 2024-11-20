@@ -211,7 +211,7 @@ if __name__ == "__main__":
 
     # Train the model
     device = torch.device("cuda")
-    weight_decay = args.weight_decy 
+    weight_decay = args.weight_decay 
     epochs = args.epochs
     learning_rate = args.lr
 

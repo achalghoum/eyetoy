@@ -90,7 +90,6 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
             model.zero_grad()
             
             for batch_idx, (inputs, labels) in enumerate(train_loader):
-                print(labels)
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs)
                 batch_loss = criterion(outputs, labels) / ACCUMULATION_STEPS

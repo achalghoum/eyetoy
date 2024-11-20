@@ -8,6 +8,7 @@ from .datasets.loader import DATASETS
 from models.encoder import DEFAULT_2D_ENCODER, Encoder2D
 from torch.optim.lr_scheduler import OneCycleLR
 import argparse
+from torchvision.transforms.v2 import CutMix, MixUp, RandomChoice
 
 BATCH_SIZE = 64
 ACCUMULATION_STEPS = 1
@@ -165,10 +166,18 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, help="Batch Size", default=64)
     args = parser.parse_args()
     BATCH_SIZE= args.batch_size
+    def AUG_COLLATE_FUNCTION(batch):
+        return RandomChoice(
+            [
+                CutMix(num_classes=train_dataset.num_classes),
+                MixUp(num_classes=train_dataset.num_classes),
+            ]
+        )(*default_collate(batch))
+
 
     # Load the specified dataset
     train_dataset, val_dataset = DATASETS[args.dataset]
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=1)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=1,collate_fn=AUG_COLLATE_FUNCTION)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=1)
     TRAIN_TOTAL = len(train_dataset)
     # Create the model
@@ -178,7 +187,7 @@ if __name__ == "__main__":
 
     # Train the model
     device = torch.device("cuda")
-    weight_decay = 1e-5  
+    weight_decay = 1e-4 
     epochs = args.epochs
     learning_rate = args.lr
 

@@ -93,8 +93,8 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs)
                 batch_loss = criterion(outputs, labels) / ACCUMULATION_STEPS
-                batch_correct = compute_accuracy_from_distributions(outputs,labels)
-                train_correct += batch_correct
+                _, predicted = outputs.max(1)
+                batch_correct = predicted.eq(labels).sum().item()
                 train_loss += batch_loss.item()
                 writer.add_scalar('Batch Loss/train', batch_loss, batch_idx+(len(train_loader)*(epoch)))
                 writer.add_scalar('Batch Accuracy/train', (100*batch_correct)/BATCH_SIZE, batch_idx+(len(train_loader)*(epoch)))

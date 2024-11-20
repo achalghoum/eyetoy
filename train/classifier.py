@@ -188,18 +188,9 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, help="Weighz Decay", default=1e-5)
     args = parser.parse_args()
     BATCH_SIZE= args.batch_size
-    def AUG_COLLATE_FUNCTION(batch):
-        return RandomChoice(
-            [
-                CutMix(num_classes=train_dataset.num_classes),
-                MixUp(num_classes=train_dataset.num_classes),
-            ]
-        )(*default_collate(batch))
-
-
     # Load the specified dataset
     train_dataset, val_dataset = DATASETS[args.dataset]
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=1,collate_fn=AUG_COLLATE_FUNCTION)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=1)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=1)
     TRAIN_TOTAL = len(train_dataset)
     # Create the model

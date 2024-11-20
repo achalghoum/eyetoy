@@ -9,6 +9,29 @@ from models.encoder import DEFAULT_2D_ENCODER, Encoder2D
 from torch.optim.lr_scheduler import OneCycleLR
 import argparse
 from torchvision.transforms.v2 import CutMix, MixUp, RandomChoice
+from torch.utils.data.dataloader import default_collate
+
+def compute_accuracy_from_distributions(outputs, targets):
+    """
+    Compute accuracy when targets are distributions over classes.
+
+    Args:
+        outputs (torch.Tensor): Model outputs (logits or probabilities), shape (batch_size, num_classes).
+        targets (torch.Tensor): Target distributions, shape (batch_size, num_classes).
+
+    Returns:
+        accuracy (float): Accuracy as the proportion of correct predictions.
+    """
+    # Predicted classes from model outputs
+    _, preds = torch.max(outputs, 1)
+
+    # True classes from target distributions
+    _, true_classes = torch.max(targets, 1)
+
+    # Compare predictions with true classes
+    correct = preds.eq(true_classes)
+
+    return sum(correct)
 
 BATCH_SIZE = 64
 ACCUMULATION_STEPS = 1
@@ -34,7 +57,7 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                              val_loader: DataLoader, num_epochs: int, learning_rate: float,
                              device: torch.device, weight_decay=1e-5, resume_from=None):
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.RAdam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = OneCycleLR(optimizer, epochs=num_epochs, steps_per_epoch=len(train_loader), max_lr=learning_rate)
 
     # Initialize training state
@@ -68,11 +91,11 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
             model.zero_grad()
             
             for batch_idx, (inputs, labels) in enumerate(train_loader):
+                print(labels)
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs)
                 batch_loss = criterion(outputs, labels) / ACCUMULATION_STEPS
-                _, predicted = outputs.max(1)
-                batch_correct = predicted.eq(labels).sum().item()
+                batch_correct = compute_accuracy_from_distributions(outputs,labels)
                 train_correct += batch_correct
                 train_loss += batch_loss.item()
                 writer.add_scalar('Batch Loss/train', batch_loss, batch_idx+(len(train_loader)*(epoch)))
@@ -164,6 +187,7 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, help='Epochs', default=30)
     parser.add_argument("--lr", type=float, help="Learning Rate", default=1e-3)
     parser.add_argument("--batch_size", type=int, help="Batch Size", default=64)
+    parser.add_argument("--weight_decay", type=float, help="Weighz Decay", default=1e-5)
     args = parser.parse_args()
     BATCH_SIZE= args.batch_size
     def AUG_COLLATE_FUNCTION(batch):
@@ -187,7 +211,7 @@ if __name__ == "__main__":
 
     # Train the model
     device = torch.device("cuda")
-    weight_decay = 1e-4 
+    weight_decay = args.weight_decy 
     epochs = args.epochs
     learning_rate = args.lr
 

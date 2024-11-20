@@ -68,7 +68,6 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
     
     # Resume from checkpoint if specified
     if resume_from and os.path.exists(resume_from):
-        print(f"Loading checkpoint from {resume_from}")
         checkpoint = torch.load(resume_from)
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])

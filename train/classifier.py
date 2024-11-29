@@ -95,7 +95,7 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                 batch_loss = criterion(outputs, labels) / ACCUMULATION_STEPS
                 _, predicted = outputs.max(1)
                 batch_correct = predicted.eq(labels).sum().item()
-                train_correct+= batch_correct
+                train_correct += batch_correct
                 train_loss += batch_loss.item()
                 writer.add_scalar('Batch Loss/train', batch_loss, batch_idx+(len(train_loader)*(epoch)))
                 writer.add_scalar('Batch Accuracy/train', (100*batch_correct)/BATCH_SIZE, batch_idx+(len(train_loader)*(epoch)))
@@ -116,6 +116,7 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
             val_loss = 0
             val_correct = 0
             val_total = 0
+            top5_correct = 0  # Initialize top-5 correct counter
             with torch.no_grad():
                 for inputs, labels in val_loader:
                     inputs, labels = inputs.to(device), labels.to(device)
@@ -125,19 +126,25 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                     _, predicted = outputs.max(1)
                     val_total += labels.size(0)
                     val_correct += predicted.eq(labels).sum().item()
+                    
+                    # Calculate top-5 accuracy
+                    top5_correct += (outputs.topk(5, dim=1)[1] == labels.view(-1, 1)).sum().item()
 
             avg_val_loss = val_loss / (len(val_loader))
             val_accuracy = 100. * val_correct / val_total
+            top5_accuracy = 100. * top5_correct / val_total  # Calculate top-5 accuracy
 
             writer.add_scalar('Loss/train', avg_train_loss, epoch+1)
             writer.add_scalar('Loss/val', avg_val_loss, epoch+1)
             writer.add_scalar('Accuracy/train', train_accuracy, epoch+1)
             writer.add_scalar('Accuracy/val', val_accuracy, epoch+1)
+            writer.add_scalar('Top5 Accuracy/val', top5_accuracy, epoch+1)  # Log top-5 accuracy
 
             print(f"Epoch {epoch + 1} - Train Loss: {avg_train_loss:.4f}, "
                   f"Train Accuracy: {train_accuracy:.2f}%, "
                   f"Val Loss: {avg_val_loss:.4f}, "
-                  f"Val Accuracy: {val_accuracy:.2f}%")
+                  f"Val Accuracy: {val_accuracy:.2f}%, "
+                  f"Top-5 Val Accuracy: {top5_accuracy:.2f}%")  # Print top-5 accuracy
 
             # Save checkpoint every epoch
             checkpoint = {

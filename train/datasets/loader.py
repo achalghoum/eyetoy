@@ -88,7 +88,7 @@ class CIFAR100Split(Dataset):  # New class for CIFAR-100
 train_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.ConvertImageDtype(torch.uint8),
-    transforms.RandAugment(),
+    transforms.RandAugment(num_ops=3),
     transforms.ConvertImageDtype(torch.float32),
     transforms.Resize((224, 224)),
     transforms.Normalize([0.5538, 0.5341, 0.5063], [0.2364, 0.2356, 0.2381])

@@ -1,1 +1,1 @@
-# EyeToy (Biologically Inspired Neighborhood Attention)
+# EyeToy (Multiscale Neighborhood Attention Transformer)

@@ -1,4 +1,4 @@
-# EyeToy: Multiscale Neighborhood Attention (NATformer)
+# EyeToy: Multiscale Neighborhood Attention (MSNAT)
 
 ## Overview
 

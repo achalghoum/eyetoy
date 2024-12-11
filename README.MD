@@ -67,3 +67,4 @@ output, context_token = encoder(input_tensor)
 ## Acknowledgments
 - [PyTorch](https://pytorch.org/)
 - [NATTEN: Neighborhood Attention](https://github.com/SHI-Labs/Neighborhood-Attention-Transformer)
+# EyeToy (Multiscale Neighborhood Attention Transformer)

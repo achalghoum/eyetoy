@@ -14,3 +14,4 @@ cifar
 /train/datasets/cifar-100-python
 /train/datasets/caltech256
 *.pth
+/train/datasets/flowers-102

@@ -45,7 +45,7 @@ class TransformerParams:
     in_channels: int
     out_channels: int
     attention_params: MultiHeadAttentionParams
-    scale_factor: Optional[int] = 1
+    scale_factor: Optional[float] = 1
 
 
 @dataclass
@@ -58,10 +58,9 @@ class GlobalAttentionParams:
 class GlobalAttentionTransformerParams:
     d_model: int
     num_heads: int
+    num_layers: int
     num_register_tokens: int = 4
     dropout: float = 0.1
-    use_input_context_token: bool = False
-    use_input_register_tokens: bool = False
 
 
 @dataclass
@@ -141,9 +140,10 @@ DEFAULT_IMG_ENCODER_PARAMS = EncoderParams(
                                scale_factor=0.5),
     ],
     global_attention_params=GlobalAttentionTransformerParams(
-        d_model=768,
-        num_heads=16,
-        num_register_tokens=4,
+        d_model=512,
+        num_heads=4,
+        num_layers = 4,
+        num_register_tokens=16,
         dropout=0.1
     ),
     input_channels=3,

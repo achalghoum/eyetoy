@@ -11,7 +11,7 @@ from layers.norms import LayerNorm3d
 from layers.positional_encoding import positional_encoding
 from layers.transformer import MSNATTransformer1D, MSNATTransformer2D, MSNATTransformer3D, \
     GlobalAttentionTransformer
-from params import ConvParams
+from params import ConvParams, GlobalAttentionParams
 from params import DEFAULT_IMG_ENCODER_PARAMS, TransformerParams
 
 
@@ -53,7 +53,7 @@ class GlobalAttentionStack(Module):
                  num_register_tokens: int = 4):
         super().__init__()
         self.d_model = d_model
-        self.attention_blocks = torch.nn.Sequential(*[
+        self.transformer_blocks = nn.ModuleList([
             GlobalAttentionTransformer(d_model, num_heads, num_register_tokens, dropout,
                                        use_input_context_token=(i != 0),
                                        use_input_register_tokens=(i != 0))
@@ -62,33 +62,31 @@ class GlobalAttentionStack(Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[
         torch.Tensor, torch.Tensor]:
-        output, context_token, _ = self.attention_blocks(x)
-        return output, context_token
+        x, context_token, register_tokens = self.transformer_blocks[0](x)
+        for transformer_block in self.transformer_blocks[1:]:
+            x, context_token, register_tokens = transformer_block(x,context_token, register_tokens)
+        return x, context_token
 
 
 class Encoder(ABC, Module, Generic[TransformerStackType]):
     transformer_stack_type: Type[TransformerStackType]
     conv_type: Type
 
-    def __init__(self, transformer_params: List[TransformerParams], num_global_attention_heads: int,
-                 global_attention_dropout: float, num_global_attention_layers: int,
-                 initial_conv_params: ConvParams):
+    def __init__(self, transformer_params: List[TransformerParams], global_attention_params: GlobalAttentionParams,
+                 initial_conv_params: ConvParams, **kwargs):
         super(Encoder, self).__init__()
         self.initial_proj = self.conv_type(**initial_conv_params.__dict__)
         self.transformer_stack = self.transformer_stack_type(
             transformer_params)
         self.d_model = transformer_params[-1].out_channels
         self.global_attention = GlobalAttentionStack(
-            transformer_params[-1].out_channels,
-            num_global_attention_heads, num_global_attention_layers,
-            global_attention_dropout)
+            **global_attention_params.__dict__)
         self._init_weights()
 
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d)):
-                fan = nn.init._calculate_fan_in_and_fan_out(m.weight)[0]
-                nn.init.kaiming_normal(m.weight, mode='fan_in' if fan > 0 else 'fan_out')
+                nn.init.xavier_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             if isinstance(m, (nn.Linear)):
@@ -151,4 +149,4 @@ class SimpleEncoder2D(Module):
         return x, context_token
 
 
-DEFAULT_2D_ENCODER = SimpleEncoder2D(**DEFAULT_IMG_ENCODER_PARAMS.__dict__)
+DEFAULT_2D_ENCODER = Encoder2D(**DEFAULT_IMG_ENCODER_PARAMS.__dict__)

@@ -20,7 +20,8 @@ class MSNATTransformer(ABC, Module, Generic[ConvType, MultiScaleMultiHeadNAType]
 
     def __init__(self, in_channels: int, out_channels: int,
                  attention_params: MultiHeadAttentionParams,
-                 scale_factor: Optional[float] = 1., **kwargs):
+                 scale_factor: Optional[float] = 1.,
+                 dropout=0.2, **kwargs):
         super(MSNATTransformer, self).__init__()
         self.multi_head_attention = self.multi_head_attention_type(
             **attention_params.__dict__)
@@ -35,7 +36,7 @@ class MSNATTransformer(ABC, Module, Generic[ConvType, MultiScaleMultiHeadNAType]
         self.scale_factor = scale_factor or attention_params.scale_factor
         self.layernorm1 = self.norm_type(in_channels)
         self.layernorm2 = self.norm_type(out_channels)
-        self.dropout = Dropout(0.2)
+        self.dropout = Dropout(dropout)
         self.in_channels = in_channels
         self.out_channels = out_channels
         self._set_shortcut()
@@ -195,7 +196,7 @@ class GlobalAttentionTransformer(nn.Module):
         attn_output = attn_output + x_w_tokens
         
         # FFN and second residual connection
-        attn_output = self.ffn(self.layernorm2(attn_output)) + attn_output
+        attn_output = self.ffn(self.dropout(self.layernorm2(attn_output))) + attn_output
 
         # Split output into components
         context_token_out = attn_output[:, 0:1, :]

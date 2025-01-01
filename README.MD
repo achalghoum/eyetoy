@@ -17,7 +17,6 @@ EyeToy is an advanced deep learning framework implementing a multi-scale neighbo
 
 ### Global Context Mechanism
 - Efficient global information processing using register tokens
-- Fixed set of learnable tokens as information bottlenecks
 - O(N) complexity message-passing pathway
 - Dedicated context token for final global representation aggregation
 

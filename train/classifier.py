@@ -98,7 +98,7 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                 train_correct += batch_correct
                 train_loss += batch_loss.item()
                 writer.add_scalar('Batch Loss/train', batch_loss, batch_idx+(len(train_loader)*(epoch)))
-                writer.add_scalar('Batch Accuracy/train', (100*batch_correct)/BATCH_SIZE, batch_idx+(len(train_loader)*(epoch)))
+                writer.add_scalar('Batch Accuracy/train', (100*batch_correct)/len(labels), batch_idx+(len(train_loader)*(epoch)))
                 writer.add_scalar('Learning Rate', optimizer.param_groups[0]['lr'], batch_idx+(len(train_loader)*epoch))
 
                 batch_loss.backward()

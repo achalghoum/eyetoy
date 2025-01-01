@@ -46,6 +46,7 @@ class TransformerParams:
     out_channels: int
     attention_params: MultiHeadAttentionParams
     scale_factor: Optional[float] = 1
+    dropout: Optional[float] = 0.2
 
 
 @dataclass
@@ -74,7 +75,7 @@ class EncoderParams:
 
 # Helper function to create ConvNATTransformerParams
 def create_ms_nat_params(in_channels, out_channels, attn_kernel_sizes, conv_params, num_heads,
-                           scale_factor=1., min_intermediate_channels=32, conv_groups=32):
+                           scale_factor=1., min_intermediate_channels=32, conv_groups=1):
     head_params = []
     intermediate_channels = max(in_channels // len(conv_params) // num_heads,
                                 min_intermediate_channels)
@@ -128,21 +129,27 @@ DEFAULT_IMG_ENCODER_PARAMS = EncoderParams(
     initial_conv_params=ConvParams(kernel_size=3, padding="same", stride=1, in_channels=3,
                                    out_channels=32),
     transformer_params=[
-        # First layers with 32 channels
         create_ms_nat_params(32, 64, first_attention_params, first_size_convs, num_heads=2,
                                scale_factor=0.5),
+        create_ms_nat_params(64, 64, first_attention_params, first_size_convs, num_heads=2,
+                               scale_factor=1),
         create_ms_nat_params(64, 128, first_attention_params, first_size_convs, num_heads=2,
                                scale_factor=0.5),
-        # 4 layers with 368 channels
+        create_ms_nat_params(128, 128, first_attention_params, first_size_convs, num_heads=2,
+                               scale_factor=1),
         create_ms_nat_params(128, 256, second_attention_params, second_size_convs, num_heads=2,
                                scale_factor=0.5),
+        create_ms_nat_params(256, 256, second_attention_params, second_size_convs, num_heads=2,
+                               scale_factor=1),
         create_ms_nat_params(256, 512, second_attention_params, second_size_convs, num_heads=2,
                                scale_factor=0.5),
+        create_ms_nat_params(512, 512, final_attention_params,final_size_convs , num_heads=8,
+                               scale_factor=1)
     ],
     global_attention_params=GlobalAttentionTransformerParams(
         d_model=512,
         num_heads=8,
-        num_layers = 4,
+        num_layers = 8,
         num_register_tokens=32,
         dropout=0.2
     ),

@@ -141,11 +141,11 @@ DEFAULT_IMG_ENCODER_PARAMS = EncoderParams(
     ],
     global_attention_params=GlobalAttentionTransformerParams(
         d_model=512,
-        num_heads=4,
+        num_heads=8,
         num_layers = 4,
-        num_register_tokens=16,
+        num_register_tokens=32,
         dropout=0.1
     ),
     input_channels=3,
-    output_channels=768,
+    output_channels=512,
 )

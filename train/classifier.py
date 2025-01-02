@@ -102,10 +102,12 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                 writer.add_scalar('Learning Rate', optimizer.param_groups[0]['lr'], batch_idx+(len(train_loader)*epoch))
 
                 batch_loss.backward()
+                should_exit = False
                 for name, param in model.named_parameters():
                     if param.grad is not None and torch.isnan(param.grad).any():
                         print(f"NaN gradients detected in layer: {name} at epoch {epoch + 1}, batch {batch_idx + 1}.")
-                        # Optionally break or handle the NaN case
+                        should_exit = True
+                if should_exit : exit()
 
 
                 if (batch_idx + 1) % ACCUMULATION_STEPS == 0:

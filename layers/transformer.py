@@ -159,6 +159,32 @@ class GlobalAttentionTransformer(nn.Module):
         """Reshapes tensor back from multi-head attention."""
         return tensor.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
 
+    def initialize_tokens(self, batch_size: int, context_token: Optional[torch.Tensor],
+                          register_tokens: Optional[torch.Tensor]) -> torch.Tensor:
+        """Initialize context and register tokens."""
+        # Handle context token
+        if self.use_input_context_token:
+            if context_token is None:
+                raise ValueError("Context token expected but not provided")
+        else:
+            context_token = self.context_token.expand(batch_size, -1, -1)
+
+        # Handle register tokens
+        if self.use_input_register_tokens:
+            if register_tokens is None:
+                raise ValueError("Register tokens expected and not provided")
+        else:
+            register_tokens = self.register_tokens.expand(batch_size, -1, -1)
+
+        # Concatenate tokens
+        tokens = torch.cat([context_token, register_tokens], dim=1)
+
+        # Add positional encoding if not using input context token
+        if not self.use_input_context_token:
+            tokens = tokens + positional_encoding(tokens, d=self.d_model)
+
+        return tokens
+
     def forward(
             self,
             x: torch.Tensor,

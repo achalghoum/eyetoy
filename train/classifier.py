@@ -106,7 +106,6 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                     if param.grad is not None and torch.isnan(param.grad).any():
                         print(f"NaN gradients detected in layer: {name} at epoch {epoch + 1}, batch {batch_idx + 1}.")
                         # Optionally break or handle the NaN case
-                        break  # Uncomment this line to stop training on NaN gradients
 
 
                 if (batch_idx + 1) % ACCUMULATION_STEPS == 0:

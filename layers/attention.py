@@ -180,15 +180,15 @@ class MulitScaleMultiHeadNA(ABC, Module, Generic[ConvType, SharedScaleNAType]):
 
 
 class MulitScaleMultiHeadNA1D(MulitScaleMultiHeadNA[Conv1d, SharedScaleNA1D]):
-    conv_attn_type = SharedScaleNA1D
+    attn_type = SharedScaleNA1D
     conv_type = Conv1d
 
 
 class MulitScaleMultiHeadNA2D(MulitScaleMultiHeadNA[Conv2d, SharedScaleNA2D]):
-    conv_attn_type = SharedScaleNA2D
+    attn_type = SharedScaleNA2D
     conv_type = Conv2d
 
 
 class MulitScaleMultiHeadNA3D(MulitScaleMultiHeadNA[Conv3d, SharedScaleNA3D]):
-    conv_attn_type = SharedScaleNA3D
+    attn_type = SharedScaleNA3D
     conv_type = Conv3d

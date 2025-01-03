@@ -92,7 +92,13 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
             
             for batch_idx, (inputs, labels) in enumerate(train_loader):
                 inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)+ 1e-8
+                outputs = model(inputs)
+                # Check for NaNs and Inf in the output
+                print("Checking for NaNs and Inf in the output:")
+                print("NaNs detected:", torch.isnan(outputs).any())
+                print("Inf detected:", torch.isinf(outputs).any())
+                print("Output range:", outputs.max(), outputs.min())
+
                 batch_loss = criterion(outputs, labels)
                 _, predicted = outputs.max(1)
                 batch_correct = predicted.eq(labels).sum().item()

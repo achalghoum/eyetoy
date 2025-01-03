@@ -92,8 +92,8 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
             
             for batch_idx, (inputs, labels) in enumerate(train_loader):
                 inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                batch_loss = criterion(outputs, labels) + 1e-8
+                outputs = model(inputs)+ 1e-8
+                batch_loss = criterion(outputs, labels)
                 _, predicted = outputs.max(1)
                 batch_correct = predicted.eq(labels).sum().item()
                 train_correct += batch_correct

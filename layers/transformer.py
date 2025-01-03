@@ -54,7 +54,7 @@ class MSNATTransformer(ABC, Module, Generic[ConvType, MultiScaleMultiHeadNAType]
         )
 
         self.scale_factor = scale_factor
-        self.layernorm1 = self.norm_type(in_channels, eps=1e-4)
+        self.layernorm1 = self.norm_type(in_channels, eps=5e-4)
         self.layernorm2 = self.norm_type(out_channels, eps=1e-4)
         self.dropout = Dropout(dropout)
         self.in_channels = in_channels

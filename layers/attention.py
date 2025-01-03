@@ -90,7 +90,7 @@ class SharedScaleNA(ABC, Module, Generic[ConvType, NAType]):
     def forward(self, x: torch.Tensor):
         qkv = self.qkv_proj(x)  # Shape: (N, C_out * num_heads * 3, H, W) for 2D
         qkv = self.transform_to_nhw1c(qkv)  # Transform to NHW1C format
-        
+        print(f"QKV SHAPE {qkv.shape}")
         # Split into individual heads
         qkv_heads = qkv.chunk(self.num_heads, dim=-1)
         
@@ -98,7 +98,8 @@ class SharedScaleNA(ABC, Module, Generic[ConvType, NAType]):
         for i, na in enumerate(self.nas):
             # Chunk into Q, K, V for the current head
             q, k, v = qkv_heads[i].chunk(3, dim=-1)
-            
+            print(f"QKV SHAPE {q.shape} {k.shape}, {v.shape}")
+
             # Perform attention for the current head
             output = na(q, k, v)  # Shape: NHW1C
             outputs.append(self.transform_from_nhw1c(output))  # Transform back to original

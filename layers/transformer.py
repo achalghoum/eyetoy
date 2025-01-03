@@ -32,7 +32,7 @@ class MSNATTransformer(ABC, Module, Generic[ConvType, MultiScaleMultiHeadNAType]
         self.final_conv = nn.Sequential(self.conv_type(kernel_size=1,
                                                        in_channels=out_channels,
                                                        out_channels=out_channels*4),
-                                        Swish(),
+                                        nn.GELU(),
                                         self.conv_type(kernel_size=1,
                                                        in_channels=out_channels * 4,
                                                        out_channels=out_channels)
@@ -118,7 +118,7 @@ class GlobalAttentionTransformer(nn.Module):
 
         self.ffn = nn.Sequential(
             nn.Linear(d_model, 4 * d_model),
-            Swish(),
+            nn.GELU(),
             nn.Linear(4 * d_model, d_model)
         )
         self.dropout = nn.Dropout(dropout)

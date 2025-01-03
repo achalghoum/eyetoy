@@ -77,7 +77,6 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
 
     # Calculate total steps for OneCycleLR
     total_steps = len(train_loader) * (num_epochs - start_epoch)
-    torch.autograd.set_detect_anomaly(True)
 
     writer = SummaryWriter()
     model.to(device)
@@ -94,10 +93,6 @@ def train_encoder_classifier(model:Encoder2DClassifier, train_loader: DataLoader
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs)
                 # Check for NaNs and Inf in the output
-                print("Checking for NaNs and Inf in the output:")
-                print("NaNs detected:", torch.isnan(outputs).any())
-                print("Inf detected:", torch.isinf(outputs).any())
-                print("Output range:", outputs.max(), outputs.min())
 
                 batch_loss = criterion(outputs, labels)
                 _, predicted = outputs.max(1)

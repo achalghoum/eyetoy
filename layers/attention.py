@@ -87,18 +87,19 @@ class SharedScaleNA(ABC, Module, Generic[ConvType, NAType]):
         self.head_channels = intermediate_channels
 
     def forward(self, x: torch.Tensor):
-        qkv = self.qkv_proj(x)  # Shape: (N, C_out * num_heads * 3, H, W) for 2D
+        # Shape: (N, C_out * num_heads * 3, H, W) for 2D
+        qkv = self.qkv_proj(x)
         qkv = self.transform_to_nhw1c(qkv)  # Transform to NHW1C format
         outputs = []
         for i, na in enumerate(self.nas):
             # Perform attention for the current head
-            output = na(qkv[..., i*3*self.head_channels:(i*3+1)*self.head_channels],
-                        qkv[..., (i*3+1)*self.head_channels:(i*3+2)*self.head_channels],
-                        qkv[..., (i*3+2)*self.head_channels:(i*3+3)*self.head_channels])  # Shape: NHW1C
-            outputs.append(self.transform_from_nhw1c(output))  # Transform back to original
-        
+            outputs.append(self.transform_from_nhw1c(na(qkv[..., i*3*self.head_channels:(i*3+1)*self.head_channels],
+                                                        qkv[..., (i*3+1)*self.head_channels:(i*3+2)*self.head_channels],
+                                                        qkv[..., (i*3+2)*self.head_channels:(i*3+3)*self.head_channels])))  # Shape: NHW1C))  # Transform back to original
+
         # Concatenate outputs across heads
         return outputs
+
     @abstractmethod
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
         raise ValueError(f"Unsupported input dimension: {x.dim()}")

@@ -21,18 +21,13 @@ class TransformerStack(Module, Generic[MSNATTransformerType]):
 
     def __init__(self, transformer_params: List[TransformerParams]):
         super().__init__()
-        self.transformers = torch.nn.ModuleList(
-            [self.transformer_type(**transformer_param.__dict__) for transformer_param in
+        self.transformers = torch.nn.Sequential(
+            *[self.transformer_type(**transformer_param.__dict__) for transformer_param in
               transformer_params]
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for transformer in self.transformers:
-            x = transformer(x)
-            if torch.isnan(x).any():
-                print(f"{transformer._get_name()} NaNs detected in x. Exiting.")
-                exit()
-
+        x = self.transformers(x)
 
         return x
 
@@ -70,9 +65,9 @@ class GlobalAttentionStack(Module):
         x, context_token, register_tokens = self.transformer_blocks[0](x)
         for transformer_block in self.transformer_blocks[1:]:
             x, context_token, register_tokens = transformer_block(x,context_token, register_tokens)
-            if torch.isnan(x).any() or torch.isnan(context_token).any() or torch.isnan(register_tokens).any():
-                print(f"{transformer_block._get_name()} NaNs detected in x. Exiting.")
-                exit()
+            print("NaNs detected in x:", torch.isnan(x).any())
+            print("NaNs detected in context_token:", torch.isnan(context_token).any())
+            print("NaNs detected in register_tokens:", torch.isnan(register_tokens).any())
         return x, context_token
 
 

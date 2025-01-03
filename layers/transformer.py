@@ -22,116 +22,49 @@ class MSNATTransformer(ABC, Module, Generic[ConvType, MultiScaleMultiHeadNAType]
     conv_type: Type[ConvType]
     norm_type: Type[Module]
 
-
-    def __init__(
-        self,
-        in_channels: int,
-        out_channels: int,
-        attention_params: MultiHeadAttentionParams,
-        scale_factor: Optional[float] = 1.0,
-        dropout=0.2,
-        **kwargs
-    ):
+    def __init__(self, in_channels: int, out_channels: int,
+                 attention_params: MultiHeadAttentionParams,
+                 scale_factor: Optional[float] = 1.,
+                 dropout=0.2, **kwargs):
         super(MSNATTransformer, self).__init__()
-
-        # Example "multi_head_attention_type" usage:
         self.multi_head_attention = self.multi_head_attention_type(
-            **attention_params.__dict__
-        )
-
-        self.final_conv = nn.Sequential(
-            self.conv_type(
-                kernel_size=1,
-                in_channels=out_channels,
-                out_channels=out_channels * 4
-            ),
-            Swish(),
-            self.conv_type(
-                kernel_size=1,
-                in_channels=out_channels * 4,
-                out_channels=out_channels
-            ),
-        )
-
-        self.scale_factor = scale_factor
-        self.layernorm1 = self.norm_type(in_channels, eps=5e-4)
-        self.layernorm2 = self.norm_type(out_channels, eps=1e-4)
+            **attention_params.__dict__)
+        self.final_conv = nn.Sequential(self.conv_type(kernel_size=1,
+                                                       in_channels=out_channels,
+                                                       out_channels=out_channels*4),
+                                        Swish(),
+                                        self.conv_type(kernel_size=1,
+                                                       in_channels=out_channels * 4,
+                                                       out_channels=out_channels)
+                                        )
+        self.scale_factor = scale_factor or attention_params.scale_factor
+        self.layernorm1 = self.norm_type(in_channels)
+        self.layernorm2 = self.norm_type(out_channels)
         self.dropout = Dropout(dropout)
         self.in_channels = in_channels
         self.out_channels = out_channels
-
         self._set_shortcut()
         self._set_rescale()
 
     def _set_shortcut(self):
-        if self.in_channels != self.out_channels:
-            self.shortcut = self.conv_type(
-                in_channels=self.in_channels,
-                out_channels=self.out_channels,
-                kernel_size=1,
-                padding="same"
-            )
-        else:
-            self.shortcut = nn.Identity()
-
+        self.shortcut = self.conv_type(in_channels=self.in_channels, out_channels=self.out_channels,
+                                       kernel_size=1,
+                                       padding="same") if self.in_channels != self.out_channels else nn.Identity()
     def _set_rescale(self):
         if self.scale_factor != 1:
-            self.rescale = lambda x: interpolate(x, scale_factor=self.scale_factor,
-                                                 mode="bilinear")
+            self.rescale = lambda x: interpolate(x, scale_factor= self.scale_factor,
+                                         mode="bilinear")
         else:
             self.rescale = lambda x: x
 
-    def residual_downsample(self, x: Tensor) -> Tensor:
+    def residual_downsample(self, x: torch.Tensor) -> torch.Tensor:
+        # Handle different channel dimensions using addition list in residual connections
         return self.shortcut(self.rescale(x))
 
-    def _check_nan(self, tensor: torch.Tensor, step: str):
-        """
-        Helper method to check for NaNs in a given tensor.
-        Exits if NaNs are found.
-        """
-        if torch.isnan(tensor).any():
-            print(f"NaN detected at step '{step}' in '{self.__class__.__name__}'. Exiting.")
-            exit(1)
-
-    def forward(self, x: Tensor) -> Tensor:
-        # ----- Step 1: LayerNorm1 -----
-        x1n = self.layernorm1(x)
-        self._check_nan(x1n, "layernorm1")
-
-        # ----- Step 2: Dropout1 -----
-        x1d = self.dropout(x1n)
-        self._check_nan(x1d, "dropout1")
-
-        # ----- Step 3: Multi-Head Attention -----
-        attn = self.multi_head_attention(x1d)
-        self._check_nan(attn, "multi_head_attention")
-
-        # ----- Step 4: Residual Downsample -----
-        residual = self.residual_downsample(x)
-        self._check_nan(residual, "residual_downsample")
-
-        # ----- Step 5: Add Residual and Attention -----
-        x2 = residual + attn
-        self._check_nan(x2, "residual + attn")
-
-        # ----- Step 6: LayerNorm2 -----
-        x2n = self.layernorm2(x2)
-        self._check_nan(x2n, "layernorm2")
-
-        # ----- Step 7: Dropout2 -----
-        x2d = self.dropout(x2n)
-        self._check_nan(x2d, "dropout2")
-
-        # ----- Step 8: Final Conv -----
-        conv_out = self.final_conv(x2d)
-        self._check_nan(conv_out, "final_conv")
-
-        # ----- Step 9: Add & Output -----
-        out = x2 + conv_out
-        self._check_nan(out, "final_output")
-
-        return out
-
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.residual_downsample(x) + self.multi_head_attention(self.dropout(self.layernorm1(x)))
+        x = x + self.final_conv(self.dropout(self.layernorm2(x)))
+        return x
 
 class MSNATTransformer1D(MSNATTransformer[Conv1d, MulitScaleMultiHeadNA1D]):
     multi_head_attention_type = MulitScaleMultiHeadNA1D

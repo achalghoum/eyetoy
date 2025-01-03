@@ -98,7 +98,7 @@ def create_ms_nat_params(in_channels, out_channels, attn_kernel_sizes, conv_para
         out_channels=out_channels,
         attention_params=MultiHeadAttentionParams(
             head_params=head_params,
-            intermediate_channels=intermediate_channels,
+            intermediate_channels=in_channels,
             out_channels=out_channels,
             final_conv_params=ConvParams(
                 in_channels=in_channels,

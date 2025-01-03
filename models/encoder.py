@@ -22,7 +22,7 @@ class TransformerStack(Module, Generic[MSNATTransformerType]):
     def __init__(self, transformer_params: List[TransformerParams]):
         super().__init__()
         self.transformers = torch.nn.ModuleList(
-            *[self.transformer_type(**transformer_param.__dict__) for transformer_param in
+            [self.transformer_type(**transformer_param.__dict__) for transformer_param in
               transformer_params]
         )
 

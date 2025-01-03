@@ -77,8 +77,7 @@ class EncoderParams:
 def create_ms_nat_params(in_channels, out_channels, attn_kernel_sizes, conv_params, num_heads,
                            scale_factor=1., min_intermediate_channels=32, conv_groups=1):
     head_params = []
-    intermediate_channels = max(in_channels // len(conv_params) // num_heads,
-                                min_intermediate_channels)
+    intermediate_channels = in_channels // len(conv_params) // num_heads
     for conv_params_1, attn_kernel_size in zip(conv_params, attn_kernel_sizes):
         conv_param = deepcopy(conv_params_1)
         conv_param.in_channels = in_channels

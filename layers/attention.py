@@ -31,12 +31,10 @@ class NA(ABC, Module, Generic[ConvType]):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         # Transform query, key, value from NCHW to NHW1C
-        kernel_size = min(self.attention_window, *q.shape[2:])
-        kernel_size -= 1 if kernel_size % 2 == 0 else 0
         return self.atten_func(query=q,
                                key=k,
                                value=v,
-                               kernel_size=kernel_size,
+                               kernel_size=self.attention_window,
                                dilation=self.attention_stride,
                                is_causal=self.is_causal)
 
@@ -93,7 +91,6 @@ class SharedScaleNA(ABC, Module, Generic[ConvType, NAType]):
         print(f"QKV SHAPE {qkv.shape}")
         # Split into individual heads
         qkv_heads = qkv.chunk(self.num_heads, dim=-1)
-        
         outputs = []
         for i, na in enumerate(self.nas):
             # Chunk into Q, K, V for the current head

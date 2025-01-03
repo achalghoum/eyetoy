@@ -99,7 +99,7 @@ class SharedScaleNA(ABC, Module, Generic[ConvType, NAType]):
             # Chunk into Q, K, V for the current head
             q, k, v = qkv_heads[i].chunk(3, dim=-1)
             print(f"QKV SHAPE {q.shape} {k.shape}, {v.shape}")
-
+            exit()
             # Perform attention for the current head
             output = na(q, k, v)  # Shape: NHW1C
             outputs.append(self.transform_from_nhw1c(output))  # Transform back to original

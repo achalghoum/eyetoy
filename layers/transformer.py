@@ -107,9 +107,7 @@ class GlobalAttentionTransformer(nn.Module):
         if not use_input_register_tokens:
             self.register_tokens = nn.Parameter(torch.randn(1, num_register_tokens, d_model))
 
-        self.query_proj = nn.Linear(d_model, d_model)
-        self.key_proj = nn.Linear(d_model, d_model)
-        self.value_proj = nn.Linear(d_model, d_model)
+        self.qkv_proj = nn.Linear(d_model, 3*d_model)
 
         self.layernorm1 = nn.LayerNorm(d_model)
         self.layernorm2 = nn.LayerNorm(d_model)
@@ -202,10 +200,10 @@ class GlobalAttentionTransformer(nn.Module):
 
         tokens = self.initialize_tokens(batch_size, context_token, register_tokens)
         x_w_tokens = self.layernorm1(torch.cat([tokens, x_flat], dim=1))
-
-        queries = self.reshape_to_heads(self.query_proj(x_w_tokens), batch_size)
-        keys = self.reshape_to_heads(self.key_proj(x_w_tokens), batch_size)
-        values = self.reshape_to_heads(self.value_proj(x_w_tokens), batch_size)
+        qkv = self.qkv_proj(x_w_tokens).chunk(3,dim=1)
+        queries = self.reshape_to_heads(qkv[0], batch_size)
+        keys = self.reshape_to_heads(qkv[1], batch_size)
+        values = self.reshape_to_heads(qkv[2], batch_size)
 
         seq_len = x_w_tokens.size(1)
         block_mask = self.create_attention_mask(batch_size, seq_len)

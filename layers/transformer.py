@@ -17,11 +17,11 @@ class Swish(Module):
     def forward(self,x):
         return x * torch.sigmoid(x)
  
+class MSNATTransformer(ABC, Module, Generic[ConvType, MultiScaleMultiHeadNAType]):
+    multi_head_attention_type: Type[MultiScaleMultiHeadNAType]
+    conv_type: Type[ConvType]
+    norm_type: Type[Module]
 
-class MSNATTransformer(ABC, nn.Module, Generic):
-    multi_head_attention_type: Type
-    conv_type: Type
-    norm_type: Type[nn.Module]
 
     def __init__(
         self,

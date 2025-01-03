@@ -89,9 +89,9 @@ class SharedScaleNA(ABC, Module, Generic[ConvType, NAType]):
 
     def forward(self, x: torch.Tensor):
         qkv = self.transform_to_nhw1c(self.qkv_proj(x))
-        qkv = qkv.split(qkv.shape[-1] // self.num_heads, dim=-1)  # Split into heads
+        qkv = qkv.split(self.head_channels* self.num_heads, dim=-1)  # Split into heads
         return [self.transform_from_nhw1c(na(q, k, v)) for i, na in enumerate(self.nas)
-                for q, k, v in (qkv[i].split(qkv[i].shape[-1] // 3, dim=-1))]  # Split each head into q,k,v
+                for q, k, v in (qkv[i].split(self.head_channels, dim=-1))]  # Split each head into q,k,v
 
     @abstractmethod
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:

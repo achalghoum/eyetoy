@@ -4,7 +4,7 @@ from typing import Type, Generic, Optional, Tuple
 import torch
 from torch import nn
 from torch.nn import Module, Conv2d, Conv3d, Conv1d, LayerNorm, Dropout
-from torch.nn.attention.flex_attention import flex_attention, create_block_mask
+from torch.nn.attention.flex_attention import flex_attention, create_block_mask, or_masks
 from torch.nn.functional import interpolate
 
 from generics import ConvType, MultiScaleMultiHeadNAType
@@ -133,11 +133,15 @@ class GlobalAttentionTransformer(nn.Module):
             if self.cached_mask_params == (batch_size, seq_len, device):
                 return self.cached_mask
 
-        def mask_mod(batch, head, q_idx, kv_idx):
-            return q_idx == 0 or 1 <= q_idx < 1 + self.num_register_tokens or kv_idx < 1 + self.num_register_tokens or q_idx == kv_idx
+        def q_mask(batch, head, q_idx, kv_idx):
+            return q_idx < self.num_register_tokens+1
+        def kv_mask(batch, head, q_idx, kv_idx):
+            return kv_idx < self.num_register_tokens+1
+        def self_mask(batch, head, q_idx, kv_idx):
+            return q_idx == kv_idx
 
         block_mask = create_block_mask(
-            mask_mod,
+            or_masks(q_mask,kv_mask,self_mask),
             B=batch_size,
             H=self.num_heads,
             Q_LEN=seq_len,

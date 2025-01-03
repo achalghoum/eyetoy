@@ -65,9 +65,6 @@ class GlobalAttentionStack(Module):
         x, context_token, register_tokens = self.transformer_blocks[0](x)
         for transformer_block in self.transformer_blocks[1:]:
             x, context_token, register_tokens = transformer_block(x,context_token, register_tokens)
-            print("NaNs detected in x:", torch.isnan(x).any())
-            print("NaNs detected in context_token:", torch.isnan(context_token).any())
-            print("NaNs detected in register_tokens:", torch.isnan(register_tokens).any())
         return x, context_token
 
 

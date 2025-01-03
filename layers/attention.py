@@ -88,10 +88,23 @@ class SharedScaleNA(ABC, Module, Generic[ConvType, NAType]):
         self.head_channels = intermediate_channels
 
     def forward(self, x: torch.Tensor):
-        qkv = self.transform_to_nhw1c(self.qkv_proj(x))
-        qkv = qkv.split(self.head_channels* self.num_heads, dim=-1)  # Split into heads
-        return [self.transform_from_nhw1c(na(q, k, v)) for i, na in enumerate(self.nas)
-                for q, k, v in (qkv[i].split(self.head_channels, dim=-1))]  # Split each head into q,k,v
+        qkv = self.qkv_proj(x)  # Shape: (N, C_out * num_heads * 3, H, W) for 2D
+        qkv = self.transform_to_nhw1c(qkv)  # Transform to NHW1C format
+        
+        # Split into individual heads
+        qkv_heads = qkv.chunk(self.num_heads, dim=-1)
+        
+        outputs = []
+        for i, na in enumerate(self.nas):
+            # Chunk into Q, K, V for the current head
+            q, k, v = qkv_heads[i].chunk(3, dim=-1)
+            
+            # Perform attention for the current head
+            output = na(q, k, v)  # Shape: NHW1C
+            outputs.append(self.transform_from_nhw1c(output))  # Transform back to original
+        
+        # Concatenate outputs across heads
+        return torch.cat(outputs, dim=1)
 
     @abstractmethod
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
@@ -166,29 +179,18 @@ class MulitScaleMultiHeadNA(ABC, Module, Generic[ConvType, SharedScaleNAType]):
             return nn.Identity()
         return lambda x: torch.nn.functional.interpolate(x, scale_factor=scale_factor,
                                                          mode='bilinear')
-    def forward(self, x: torch.Tensor):
-        """
-        Forward pass with memory efficiency.
-        Processes each head iteratively to reduce memory usage.
-        """
-        # Project input to query, key, value
-        qkv = self.qkv_proj(x)  # Shape: (N, C_out * num_heads * 3, H, W) for 2D
-        qkv = self.transform_to_nhw1c(qkv)  # Transform to NHW1C format
-        
-        # Split into individual heads
-        qkv_heads = qkv.chunk(self.num_heads, dim=-1)
-        
-        outputs = []
-        for i, na in enumerate(self.nas):
-            # Chunk into Q, K, V for the current head
-            q, k, v = qkv_heads[i].chunk(3, dim=-1)
-            
-            # Perform attention for the current head
-            output = na(q, k, v)  # Shape: NHW1C
-            outputs.append(self.transform_from_nhw1c(output))  # Transform back to original
-        
-        # Concatenate outputs across heads
-        return torch.cat(outputs, dim=1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Compute output size based on scale factor
+        input_size = x.shape[2:]  # Assuming NCHW or NCDHW format
+
+        # Process all heads for all batches
+        combined_output = torch.cat([torch.nn.functional.interpolate(self.dropout(output), size=input_size,
+                                                                     mode='nearest') for head in self.attention_heads for output in head(x)], dim=1)
+        combined_output = self.scale_fn(combined_output)
+        # Apply final convolution
+        return self.out_proj(combined_output)
+
 
 class MulitScaleMultiHeadNA1D(MulitScaleMultiHeadNA[Conv1d, SharedScaleNA1D]):
     attn_type = SharedScaleNA1D

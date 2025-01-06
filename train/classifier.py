@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from .datasets.loader import DATASETS
 from models.encoder import DEFAULT_2D_ENCODER, Encoder2D
-from torch.optim.lr_scheduler import OneCycleLR
+from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingLR
 import argparse
 from torchvision.transforms.v2 import CutMix, MixUp, RandomChoice
 from torch.utils.data.dataloader import default_collate

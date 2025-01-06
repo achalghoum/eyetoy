@@ -24,7 +24,8 @@ class NeighborhoodAttentionParams:
 
 @dataclass
 class HeadParams:
-    attn_params: List[NeighborhoodAttentionParams]
+    attn_params: NeighborhoodAttentionParams
+    num_heads:int
     in_channels: int
     intermediate_channels: int
     conv_params: ConvParams
@@ -75,22 +76,21 @@ class EncoderParams:
 
 # Helper function to create ConvNATTransformerParams
 def create_ms_nat_params(in_channels, out_channels, attn_kernel_sizes, conv_params, num_heads,
-                           scale_factor=1., min_intermediate_channels=32, conv_groups=1):
+                           scale_factor=1., dropout=0.2, conv_groups=32):
     head_params = []
-    intermediate_channels = in_channels // len(conv_params) // num_heads
+    intermediate_channels = out_channels // len(conv_params) // num_heads
     for conv_params_1, attn_kernel_size in zip(conv_params, attn_kernel_sizes):
         conv_param = deepcopy(conv_params_1)
         conv_param.in_channels = in_channels
-        conv_param.out_channels = intermediate_channels
-        conv_param.groups = conv_groups if intermediate_channels % conv_groups == 0 else intermediate_channels
+        conv_param.out_channels = out_channels
+        conv_param.groups = conv_groups if in_channels % conv_groups == 0 else in_channels
         head_params.append(HeadParams(
-            attn_params=[
-                            NeighborhoodAttentionParams(attention_window=attn_kernel_size,
-                                                        attention_stride=1)] * num_heads,
+            attn_params=NeighborhoodAttentionParams(attention_window=attn_kernel_size,attention_stride=1),
+            num_heads = num_heads,
             in_channels=in_channels,
             intermediate_channels=intermediate_channels,
             conv_params=conv_param,
-            dropout=0.1
+            dropout=dropout
         ))
     return TransformerParams(
         in_channels=in_channels,

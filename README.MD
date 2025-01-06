@@ -2,7 +2,7 @@
 
 ## Overview
 
-EyeToy is an advanced deep learning framework implementing a multi-scale neighborhood attention mechanism that simultaneously processes input at different granularities, enabling efficient global context understanding.
+EyeToy is an advanced deep learning framework implementing a multi-scale neighborhood attention mechanism that simultaneously processes input at different granularities, enabling efficient global context approximation in linear time.
 
 ## Key Innovations
 

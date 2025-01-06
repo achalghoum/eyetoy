@@ -69,36 +69,37 @@ class SharedScaleNA(ABC, Module, Generic[ConvType, NAType]):
     conv_type: Type[ConvType]
     na_type: Type[NAType]
 
-    def __init__(self, attn_params: List[NeighborhoodAttentionParams],
+    def __init__(self, attn_params: NeighborhoodAttentionParams,
                  in_channels: int,
                  intermediate_channels: int,
                  conv_params: ConvParams,
-                 dropout: float = 0.2):
+                 num_heads:int,
+                 dropout: float=  0.2):
         super().__init__()
-
-        self.num_heads = len(attn_params)
-        self.qkv_params = conv_params
-        self.qkv_params.out_channels = intermediate_channels*self.num_heads*3
-        self.qkv_proj = self.conv_type(**conv_params.__dict__)
-        self.nas = nn.ModuleList(
-            [self.na_type(attn_params=params, channels=intermediate_channels) for params in
-             attn_params])
+        self.num_heads=num_heads
+        self.tokenizer = self.conv_type(**conv_params.__dict__)
+        self.qkv_proj = self.conv_type(in_channels=conv_params.out_channels,
+                                       out_channels=intermediate_channels*self.num_heads*3,
+                                       stride=1,
+                                       kernel_size=1,
+                                       padding="same"
+                                       )
+        self.na = self.na_type(attn_params=attn_params)
         self.in_channels = in_channels
-        self.head_channels = intermediate_channels
+        self.head_dim = intermediate_channels
+        self.dropout=nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor):
         # Shape: (N, C_out * num_heads * 3, H, W) for 2D
-        qkv = self.qkv_proj(x)
-        qkv = self.transform_to_nhw1c(qkv)  # Transform to NHW1C format
-        outputs = []
-        for i, na in enumerate(self.nas):
-            # Perform attention for the current head
-            outputs.append(self.transform_from_nhw1c(na(qkv[..., i*3*self.head_channels:(i*3+1)*self.head_channels],
-                                                        qkv[..., (i*3+1)*self.head_channels:(i*3+2)*self.head_channels],
-                                                        qkv[..., (i*3+2)*self.head_channels:(i*3+3)*self.head_channels])))  # Shape: NHW1C))  # Transform back to original
+        qkv = self.transform_to_nhw1c(self.qkv_proj(self.dropout(self.tokenizer(x))))
+        q = qkv[0]
+        k = qkv[1]
+        v = qkv[2]
+        # Perform attention for the current head
+        atten_output = self.na(q,k,v)
+        return [self.transform_from_nhw1c(o) for o in atten_output.chunk(self.num_heads, dim=-2)]
 
         # Concatenate outputs across heads
-        return outputs
 
     @abstractmethod
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
@@ -114,8 +115,8 @@ class SharedScaleNA1D(SharedScaleNA[Conv1d, NA1D]):
     na_type = NA1D
 
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
-        return x.permute(0, 2, 1).unsqueeze(2)  # NL1C
-
+        B,C,L = x.shape
+        return x.reshape(B, L, 3, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4)
     def transform_from_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
         return x.squeeze(2).permute(0, 2, 1)  # NCL
 
@@ -125,7 +126,8 @@ class SharedScaleNA2D(SharedScaleNA[Conv2d, NA2D]):
     na_type = NA2D
 
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
-        return x.permute(0, 2, 3, 1).unsqueeze(3)  # NHW1C
+        B,C,H,W = x.shape
+        return x.reshape(B, H, W, 3, self.num_heads, self.head_dim).permute(3, 0, 1, 2, 4, 5)
 
     def transform_from_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
         return x.squeeze(3).permute(0, 3, 1, 2)  # NCHW
@@ -136,8 +138,8 @@ class SharedScaleNA3D(SharedScaleNA[Conv3d, NA3D]):
     na_type = NA3D
 
     def transform_to_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
-        return x.permute(0, 2, 3, 4, 1).unsqueeze(4)  # NDHW1C
-
+        B, D, H, W, C = x.shape
+        return x.reshape(B, D, H, W, 3, self.num_heads, self.head_dim).permute(4, 0, 5, 1, 2, 3, 6)
     def transform_from_nhw1c(self, x: torch.Tensor) -> torch.Tensor:
         return x.squeeze(4).permute(0, 4, 1, 2, 3)  # NCDHW
 
@@ -158,7 +160,7 @@ class MulitScaleMultiHeadNA(ABC, Module, Generic[ConvType, SharedScaleNAType]):
             self.attn_type(**head_param.__dict__) for head_param in head_params
         ])
         final_conv_params.in_channels = sum(
-            param.intermediate_channels * len(param.attn_params) for param in head_params)
+            param.intermediate_channels * param.num_heads for param in head_params)
         final_conv_params.kernel_size = 1
         final_conv_params.stride = 1
         final_conv_params.out_channels = out_channels

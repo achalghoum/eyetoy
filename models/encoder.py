@@ -149,4 +149,4 @@ class SimpleEncoder2D(Module):
         return x, context_token
 
 
-DEFAULT_2D_ENCODER = Encoder2D(**DEFAULT_IMG_ENCODER_PARAMS.__dict__)
+DEFAULT_2D_ENCODER = SimpleEncoder2D(**DEFAULT_IMG_ENCODER_PARAMS.__dict__)

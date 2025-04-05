@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset, random_split
 from torchvision import transforms
-from torchvision.datasets import Caltech256, CIFAR10, CIFAR100, Flowers102, Caltech101
+from torchvision.datasets import Caltech256, CIFAR10, CIFAR100, Flowers102, Caltech101, ImageNet
 
 
 class CalTech256Split(Dataset):
@@ -85,6 +85,21 @@ class CIFAR100Split(Dataset):  # New class for CIFAR-100
         return image, class_id
 
 
+class ImageNetSplit(Dataset):
+    def __init__(self, root_dir, transform=None, download=False, split="train"):
+        self.dataset = ImageNet(
+            root=root_dir, transform=transform, download=download, split=split)
+        self.transform = transform
+        self.num_classes = 1000  # ImageNet has 1000 classes
+
+    def __len__(self):
+        return len(self.dataset)
+
+    def __getitem__(self, idx):
+        image, class_id = self.dataset[idx]
+        return image, class_id
+
+
 train_transform = transforms.Compose([
     transforms.ToTensor(),
     transforms.ConvertImageDtype(torch.uint8),
@@ -115,6 +130,23 @@ cifar_val_transform = transforms.Compose([
 
 ])
 
+# ImageNet specific transforms with standard normalization values
+imagenet_train_transform = transforms.Compose([
+    transforms.RandomResizedCrop(224),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    transforms.ConvertImageDtype(torch.uint8),
+    transforms.RandAugment(num_ops=2, magnitude=9),
+    transforms.ConvertImageDtype(torch.float32),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+imagenet_val_transform = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
 caltech_train_lst_path = os.path.join(current_dir, "caltech256_train_lst.txt")
@@ -130,10 +162,15 @@ cifar100_train = CIFAR100Split(
     root_dir=current_dir, transform=cifar_train_transform, download=True,train=True)
 cifar100_val = CIFAR100Split(root_dir=current_dir, transform=cifar_val_transform, train=False)
 
-
+# Initialize ImageNet datasets
+imagenet_train = ImageNetSplit(
+    root_dir=current_dir, transform=imagenet_train_transform, download=True, split="train")
+imagenet_val = ImageNetSplit(
+    root_dir=current_dir, transform=imagenet_val_transform, split="val")
 
 DATASETS: Dict[str, Tuple[Dataset, Dataset]] = {
     "caltech256": (caltech_256_train, caltech_256_val),
     "cifar10": (cifar10_train, cifar10_val),
-    "cifar100": (cifar100_train, cifar100_val)
+    "cifar100": (cifar100_train, cifar100_val),
+    "imagenet": (imagenet_train, imagenet_val)
 }

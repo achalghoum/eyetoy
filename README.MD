@@ -32,7 +32,6 @@ EyeToy is an advanced deep learning framework implementing a multi-scale neighbo
 - Multi-Scale Multi-Head Neighborhood Attention Transformers
 - Global Attention Transformers
 - Positional encoding
-- Residual connections and layer normalization
 
 ### Encoders
 - Dimension-specific encoder implementations

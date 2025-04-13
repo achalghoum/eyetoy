@@ -4,11 +4,11 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-torch = "==2.5.0"
+torch = "==2.6.0"
 torchvision = "*"
 torchaudio = "*"
 pip = "*"
-natten = "==0.17.3"
+natten = {file = "https://shi-labs.com/natten/wheels/cu124/torch2.6.0/natten-0.17.5%2Btorch260cu124-cp310-cp310-linux_x86_64.whl"}
 gdown = "*"
 black = "*"
 

@@ -144,26 +144,10 @@ final_attention_params = [7]
 # Create the specific configuration
 DEFAULT_IMG_ENCODER_PARAMS = EncoderParams(
     initial_conv_params=ConvParams(
-        kernel_size=3, padding="same", stride=1, in_channels=3, out_channels=32
+        kernel_size=3, padding="same", stride=1, in_channels=3, out_channels=64,
     ),
     transformer_params=[
         create_ms_nat_params(
-            32,
-            64,
-            first_attention_params,
-            first_size_convs,
-            num_heads=2,
-            scale_factor=0.5,
-        ),
-        create_ms_nat_params(
-            64,
-            64,
-            first_attention_params,
-            first_size_convs,
-            num_heads=2,
-            scale_factor=1,
-        ),
-        create_ms_nat_params(
             64,
             128,
             first_attention_params,
@@ -182,16 +166,16 @@ DEFAULT_IMG_ENCODER_PARAMS = EncoderParams(
         create_ms_nat_params(
             128,
             256,
-            second_attention_params,
-            second_size_convs,
+            first_attention_params,
+            first_size_convs,
             num_heads=2,
             scale_factor=0.5,
         ),
         create_ms_nat_params(
             256,
             256,
-            second_attention_params,
-            second_size_convs,
+            first_attention_params,
+            first_size_convs,
             num_heads=2,
             scale_factor=1,
         ),
@@ -206,6 +190,22 @@ DEFAULT_IMG_ENCODER_PARAMS = EncoderParams(
         create_ms_nat_params(
             512,
             512,
+            second_attention_params,
+            second_size_convs,
+            num_heads=2,
+            scale_factor=1,
+        ),
+        create_ms_nat_params(
+            512,
+            1024,
+            second_attention_params,
+            second_size_convs,
+            num_heads=2,
+            scale_factor=0.5,
+        ),
+        create_ms_nat_params(
+            1024,
+            1024,
             final_attention_params,
             final_size_convs,
             num_heads=8,

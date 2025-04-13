@@ -1,4 +1,4 @@
-from typing import Dict, Tuple
+from typing import Callable, Dict, Tuple
 import os
 
 import torch
@@ -86,9 +86,9 @@ class CIFAR100Split(Dataset):  # New class for CIFAR-100
 
 
 class ImageNetSplit(Dataset):
-    def __init__(self, root_dir, transform=None, download=False, split="train"):
+    def __init__(self, root_dir, transform=None, split="train"):
         self.dataset = ImageNet(
-            root=root_dir, transform=transform, download=download, split=split)
+            root=os.path.join(root_dir,"imagenet"), transform=transform, split=split)
         self.transform = transform
         self.num_classes = 1000  # ImageNet has 1000 classes
 
@@ -132,7 +132,7 @@ cifar_val_transform = transforms.Compose([
 
 # ImageNet specific transforms with standard normalization values
 imagenet_train_transform = transforms.Compose([
-    transforms.RandomResizedCrop(224),
+    transforms.RandomResizedCrop(128),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
     transforms.ConvertImageDtype(torch.uint8),
@@ -142,8 +142,8 @@ imagenet_train_transform = transforms.Compose([
 ])
 
 imagenet_val_transform = transforms.Compose([
-    transforms.Resize(256),
-    transforms.CenterCrop(224),
+    transforms.Resize(144),
+    transforms.CenterCrop(128),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
@@ -151,24 +151,24 @@ imagenet_val_transform = transforms.Compose([
 current_dir = os.path.dirname(os.path.abspath(__file__))
 caltech_train_lst_path = os.path.join(current_dir, "caltech256_train_lst.txt")
 caltech_val_lst_path = os.path.join(current_dir, "caltech256_val_lst.txt")
-caltech_256_train = CalTech256Split(caltech_train_lst_path, root_dir=current_dir,
+caltech_256_train = lambda: CalTech256Split(caltech_train_lst_path, root_dir=current_dir,
                                     transform=train_transform, download=True)
-caltech_256_val = CalTech256Split(caltech_val_lst_path, root_dir=current_dir,
+caltech_256_val = lambda: CalTech256Split(caltech_val_lst_path, root_dir=current_dir,
                                   transform=val_transform)
-cifar10_train = CIFAR10Split(
+cifar10_train = lambda: CIFAR10Split(
     root_dir=current_dir, transform=cifar_train_transform, download=True, train=True)
-cifar10_val = CIFAR10Split(root_dir=current_dir, transform=cifar_val_transform, train=False)
-cifar100_train = CIFAR100Split(
-    root_dir=current_dir, transform=cifar_train_transform, download=True,train=True)
-cifar100_val = CIFAR100Split(root_dir=current_dir, transform=cifar_val_transform, train=False)
+cifar10_val = lambda: CIFAR10Split(root_dir=current_dir, transform=cifar_val_transform, train=False)
+cifar100_train = lambda: CIFAR100Split(
+    root_dir=current_dir, transform=cifar_train_transform, download=True, train=True)
+cifar100_val = lambda: CIFAR100Split(root_dir=current_dir, transform=cifar_val_transform, train=False)
 
 # Initialize ImageNet datasets
-imagenet_train = ImageNetSplit(
-    root_dir=current_dir, transform=imagenet_train_transform, download=True, split="train")
-imagenet_val = ImageNetSplit(
+imagenet_train = lambda: ImageNetSplit(
+    root_dir=current_dir, transform=imagenet_train_transform, split="train")
+imagenet_val = lambda: ImageNetSplit(
     root_dir=current_dir, transform=imagenet_val_transform, split="val")
 
-DATASETS: Dict[str, Tuple[Dataset, Dataset]] = {
+DATASETS: Dict[str, Tuple[Callable[[],Dataset], Callable[[],Dataset]]] = {
     "caltech256": (caltech_256_train, caltech_256_val),
     "cifar10": (cifar10_train, cifar10_val),
     "cifar100": (cifar100_train, cifar100_val),

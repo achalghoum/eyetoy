@@ -10,6 +10,7 @@ from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingLR
 import argparse
 from torchvision.transforms.v2 import CutMix, MixUp, RandomChoice
 from torch.utils.data.dataloader import default_collate
+import sys
 
 
 def compute_accuracy_from_distributions(outputs, targets):
@@ -71,27 +72,58 @@ def train_encoder_classifier(
     optimizer = optim.AdamW(
         model.parameters(), lr=learning_rate, weight_decay=weight_decay
     )
-    scheduler = OneCycleLR(
-        optimizer,
-        epochs=num_epochs,
-        steps_per_epoch=len(train_loader),
-        max_lr=learning_rate,
-    )
-
+    
     # Initialize training state
     start_epoch = 0
     best_val_loss = float("inf")
     patience = 100
     counter = 0
+    
+    # Setup function for scheduler to make it easy to recreate after resume
+    def create_scheduler(optimizer, num_epochs, start_epoch, train_loader):
+        return OneCycleLR(
+            optimizer,
+            epochs=num_epochs - start_epoch,
+            steps_per_epoch=len(train_loader),
+            max_lr=learning_rate,
+            pct_start=0.3,
+            div_factor=25.0,
+            final_div_factor=10000.0,
+        )
+    
+    # Initial scheduler creation
+    scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
 
     # Resume from checkpoint if specified
     if resume_from and os.path.exists(resume_from):
-        checkpoint = torch.load(resume_from)
+        print(f"Resuming training from {resume_from}")
+        checkpoint = torch.load(resume_from, map_location=device)
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        
+        # Fix optimizer state device mismatch
+        for state in optimizer.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
+        
         start_epoch = checkpoint["epoch"]
         best_val_loss = checkpoint["best_val_loss"]
         counter = checkpoint["early_stop_counter"]
+        
+        # After loading epoch and other states, recreate the scheduler with remaining epochs
+        if "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+        else:
+            # If no scheduler state in checkpoint, create a fresh scheduler with correct remaining epochs
+            scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
+        
+        # Restore random states if available
+        if "torch_rng_state" in checkpoint:
+            torch.set_rng_state(checkpoint["torch_rng_state"])
+        if "numpy_rng_state" in checkpoint and "numpy" in sys.modules:
+            import numpy as np
+            np.random.set_state(checkpoint["numpy_rng_state"])
 
     # Calculate total steps for OneCycleLR
     total_steps = len(train_loader) * (num_epochs - start_epoch)
@@ -189,9 +221,17 @@ def train_encoder_classifier(
                 "epoch": epoch + 1,
                 "model_state_dict": model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
                 "best_val_loss": best_val_loss,
                 "early_stop_counter": counter,
+                "torch_rng_state": torch.get_rng_state(),
             }
+            
+            # Save numpy random state if numpy is imported
+            if "numpy" in sys.modules:
+                import numpy as np
+                checkpoint["numpy_rng_state"] = np.random.get_state()
+                
             torch.save(checkpoint, "checkpoint.pth")
 
             # Early stopping check
@@ -211,9 +251,17 @@ def train_encoder_classifier(
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
+            "scheduler_state_dict": scheduler.state_dict(),
             "best_val_loss": best_val_loss,
             "early_stop_counter": counter,
+            "torch_rng_state": torch.get_rng_state(),
         }
+        
+        # Save numpy random state if numpy is imported
+        if "numpy" in sys.modules:
+            import numpy as np
+            checkpoint["numpy_rng_state"] = np.random.get_state()
+        
         torch.save(checkpoint, "interrupt_checkpoint.pth")
         print("Checkpoint saved. You can resume training using this checkpoint.")
 
@@ -240,7 +288,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     BATCH_SIZE = args.batch_size
     # Load the specified dataset
-    train_dataset, val_dataset = DATASETS[args.dataset]
+    train_dataset_func, val_dataset_func = DATASETS[args.dataset]
+    train_dataset = train_dataset_func()
+    val_dataset = val_dataset_func()
     train_loader = DataLoader(
         train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=1
     )

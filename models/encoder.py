@@ -107,7 +107,7 @@ class Encoder(ABC, Module, Generic[TransformerStackType]):
         self.d_model = transformer_params[-1].out_channels
 
         # Create positional embedding layer
-        self.positional_embedding = get_positional_embedding(self.dim, self.d_model)
+        self.positional_embedding = get_positional_embedding(self.dim, initial_conv_params.out_channels)
 
         self.global_attention = GlobalAttentionStack(**global_attention_params.__dict__)
         self._init_weights()
@@ -169,7 +169,7 @@ class SimpleEncoder2D(Module):
         self.d_model = transformer_params[-1].out_channels
 
         # Add positional embedding
-        self.positional_embedding = PositionalEmbedding2D(self.d_model)
+        self.positional_embedding = PositionalEmbedding2D(initial_conv_params.out_channels)
         self.pe_scale = 0.1
 
         self.layer_norm = LayerNorm2d(self.d_model)

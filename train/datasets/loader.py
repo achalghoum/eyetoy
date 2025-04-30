@@ -141,7 +141,7 @@ imagenet_train_transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-imagenet_val_transform = transforms.Compose([
+imagenet_val_transfortransformsm = .Compose([
     transforms.Resize(144),
     transforms.CenterCrop(128),
     transforms.ToTensor(),

@@ -102,26 +102,54 @@ Refines global context efficiently after `TransformerStack`.
 
 **4.5. Visualization of Attention Mechanisms**
 
-To better illustrate the core components, the following diagrams visualize the data flow within the MSNAT block and the Global Attention mechanism.
+To better illustrate the core components, the following diagrams visualize the data flow within the MSNAT block and the Global Attention mechanism, including volumetric representations of tensor transformations.
 
 ***Multi-Scale Neighborhood Attention (MSNAT) Block Flow:***
 
-This diagram shows how an input tensor flows through a single `MSNATTransformer` block. The key component is the `MultiScaleMultiHeadNA` module, which processes the input in parallel across different spatial scales.
+This diagram shows how an input tensor flows through a single `MSNATTransformer` block, with volumetric representations of the multi-scale processing.
 
 ```mermaid
 graph TD
-    Input("Input Tensor") --> LN1("LayerNorm")
-    Input --> Shortcut("Shortcut Path")
+    subgraph InputVolume
+        Input3D["Input Volume
+        (B×C×H×W)"]
+    end
+    
+    Input3D --> LN1("LayerNorm")
+    Input3D --> Shortcut("Shortcut Path")
     LN1 --> MSNA("MultiScaleMultiHeadNA")
     
-    subgraph MultiScale
-        MSNA_in("Input") --> Scale1("Scale 1 Processing")
-        MSNA_in --> Scale2("Scale 2 Processing")
-        MSNA_in --> ScaleN("Scale N Processing")
-        Scale1 --> Concat("Concatenate")
-        Scale2 --> Concat
-        ScaleN --> Concat
-        Concat --> MSNA_out("Output")
+    subgraph MultiScaleProcessing
+        MSNA_in("Input Volume") --> Scale1("Scale 1
+        Conv(k₁,s₁)
+        NA(win₁)")
+        MSNA_in --> Scale2("Scale 2
+        Conv(k₂,s₂)
+        NA(win₂)")
+        MSNA_in --> ScaleN("Scale N
+        Conv(kₙ,sₙ)
+        NA(winₙ)")
+        
+        subgraph Scale1Volume
+            Scale1 --> S1_Vol["Volume 1
+            (B×C₁×H₁×W₁)"]
+        end
+        
+        subgraph Scale2Volume
+            Scale2 --> S2_Vol["Volume 2
+            (B×C₂×H₂×W₂)"]
+        end
+        
+        subgraph ScaleNVolume
+            ScaleN --> SN_Vol["Volume N
+            (B×Cₙ×Hₙ×Wₙ)"]
+        end
+        
+        S1_Vol --> Concat("Concatenate
+        (B×ΣCᵢ×H×W)")
+        S2_Vol --> Concat
+        SN_Vol --> Concat
+        Concat --> MSNA_out("Output Volume")
     end
     
     MSNA --> Dropout1("Dropout")
@@ -132,38 +160,60 @@ graph TD
     FFN --> Dropout2("Dropout")
     Dropout2 --> Add2("Add")
     Add1 --> Add2
-    Add2 --> Output("Output Tensor")
+    Add2 --> Output3D["Output Volume
+    (B×C×H×W)"]
     
-    classDef scale1 fill:#f9f,stroke:#333
-    classDef scale2 fill:#ccf,stroke:#333
-    classDef scaleN fill:#cfc,stroke:#333
+    classDef volume fill:#f9f,stroke:#333,stroke-width:2px
+    classDef scale fill:#ccf,stroke:#333,stroke-width:2px
+    classDef process fill:#cfc,stroke:#333,stroke-width:2px
     
-    class Scale1 scale1
-    class Scale2 scale2
-    class ScaleN scaleN
+    class Input3D,Output3D volume
+    class S1_Vol,S2_Vol,SN_Vol scale
+    class Scale1,Scale2,ScaleN process
 ```
 
-*   **Parallel Head Groups:** The input is processed by multiple parallel groups.
-*   **Tokenization:** Each group uses a distinct convolution (`Conv k, s`) to potentially change resolution and tokenize features.
-*   **Neighborhood Attention (NA):** Each group applies Neighborhood Attention with its specific window size (`NA win`).
-*   **Resizing & Concatenation:** Outputs from different scales are resized to a common dimension (usually the input dimension before concatenation) and combined channel-wise.
-*   **Final Projection:** A final convolution mixes information across scales.
+*   **Volumetric Processing:** The diagram shows how input volumes are processed through different scales, maintaining the batch (B) and spatial (H,W) dimensions while potentially varying channel (C) dimensions.
+*   **Scale-Specific Operations:** Each scale applies its own convolution (k,s) and neighborhood attention (win) parameters, creating distinct feature volumes.
+*   **Volume Concatenation:** The outputs from different scales are resized to a common spatial dimension and concatenated along the channel axis, creating a rich multi-scale representation.
 
 ***Global Attention Transformer Flow:***
 
-This diagram illustrates the flow within a single `GlobalAttentionTransformer` layer, used in the `GlobalAttentionStack`. It highlights the interaction between spatial features and the context/register tokens.
+This diagram illustrates the flow within a single `GlobalAttentionTransformer` layer, showing the volumetric transformations and token interactions.
 
 ```mermaid
 graph TD
-    InputFeatures("Input Features") --> Flatten("Flatten Spatial")
-    CTokens("Context Tokens") --> Concat("Concatenate")
-    RTokens("Register Tokens") --> Concat
+    subgraph InputVolumes
+        Input3D["Input Features
+        (B×C×H×W)"]
+        CTokens["Context Tokens
+        (B×Nc×D)"]
+        RTokens["Register Tokens
+        (B×Nr×D)"]
+    end
+    
+    Input3D --> Flatten("Flatten Spatial
+    (B×C×HW)")
+    CTokens --> Concat("Concatenate
+    (B×(C×HW+Nc+Nr)×D)")
+    RTokens --> Concat
     Flatten --> Concat
     
     Concat --> LN1("LayerNorm")
     LN1 --> QKV("QKV Projection")
     QKV --> Attention("Masked Flex Attention")
-    Attention --> Add1("Add")
+    
+    subgraph AttentionVolumes
+        Attention --> SpatialAttn["Spatial Attention
+        (B×C×HW×D)"]
+        Attention --> ContextAttn["Context Attention
+        (B×Nc×D)"]
+        Attention --> RegisterAttn["Register Attention
+        (B×Nr×D)"]
+    end
+    
+    SpatialAttn --> Add1("Add")
+    ContextAttn --> Add1
+    RegisterAttn --> Add1
     LN1 -- "Residual" --> Add1
     
     Add1 --> LN2("LayerNorm")
@@ -172,18 +222,33 @@ graph TD
     Add1 -- "Residual" --> Add2
     
     Add2 --> Split("Split Tokens")
-    Split -- "Spatial" --> Reshape("Reshape")
-    Reshape --> OutFeatures("Output Features")
-    Split -- "Context" --> OutContext("Output Context")
-    Split -- "Registers" --> OutRegisters("Output Registers")
+    Split -- "Spatial" --> Reshape("Reshape
+    (B×C×H×W)")
+    Reshape --> OutFeatures["Output Features
+    (B×C×H×W)"]
+    Split -- "Context" --> OutContext["Output Context
+    (B×Nc×D)"]
+    Split -- "Registers" --> OutRegisters["Output Registers
+    (B×Nr×D)"]
+    
+    classDef volume fill:#f9f,stroke:#333,stroke-width:2px
+    classDef token fill:#ccf,stroke:#333,stroke-width:2px
+    classDef process fill:#cfc,stroke:#333,stroke-width:2px
+    
+    class Input3D,OutFeatures volume
+    class CTokens,RTokens,OutContext,OutRegisters token
+    class Flatten,Concat,Reshape process
 ```
 
-*   **Token Concatenation:** Spatial features are flattened and concatenated with learnable (or input) context and register tokens.
-*   **Masked Attention:** `flex_attention` is used with a specific mask:
-  * Context and Register tokens attend to all other tokens (context, registers, and all spatial tokens).
-  * Spatial tokens attend only to themselves *and* the context/register tokens.
-  * Crucially, spatial tokens **do not** attend to other spatial tokens, maintaining O(N) complexity.
-* **Output:** The layer outputs refined spatial features, an updated context token, and updated register tokens.
+*   **Volume Transformations:** Shows how spatial features are flattened and combined with context/register tokens, maintaining batch and feature dimensions.
+*   **Attention Volumes:** Illustrates how attention is computed separately for spatial features, context tokens, and register tokens, with appropriate dimensional transformations.
+*   **Output Volumes:** Demonstrates how the final outputs maintain their respective dimensional structures (spatial volumes and token sequences).
+
+These enhanced diagrams provide a clearer visualization of:
+1. The volumetric nature of the multi-scale processing in MSNAT
+2. The dimensional transformations throughout the network
+3. The interaction between spatial volumes and token sequences
+4. The parallel processing of different scales and attention mechanisms
 
 **5. Experiments**
 

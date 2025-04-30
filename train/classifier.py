@@ -81,9 +81,12 @@ def train_encoder_classifier(
     weight_decay=1e-5,
     resume_from=None,
 ):
+    # Move model to device first
+    model = model.to(device)
+    
     # Wrap model with DDP
     if world_size > 1:
-        model = DDP(model, device_ids=[rank])
+        model = DDP(model, device_ids=[rank], output_device=rank)
     
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(
@@ -147,7 +150,6 @@ def train_encoder_classifier(
 
     # Only create SummaryWriter on rank 0
     writer = SummaryWriter() if rank == 0 else None
-    model.to(device)
 
     try:
         for epoch in range(start_epoch, num_epochs):
@@ -343,7 +345,7 @@ def train(rank, world_size, args):
     model = Encoder2DClassifier(encoder, num_classes)
     
     # Train the model
-    device = torch.device(f"cuda:{rank}")
+    device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
     weight_decay = args.weight_decay
     epochs = args.epochs
     learning_rate = args.lr

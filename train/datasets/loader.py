@@ -132,7 +132,7 @@ cifar_val_transform = transforms.Compose([
 
 # ImageNet specific transforms with standard normalization values
 imagenet_train_transform = transforms.Compose([
-    transforms.RandomResizedCrop(128),
+    transforms.RandomResizedCrop(224),
     transforms.RandomHorizontalFlip(),
     transforms.ToTensor(),
     transforms.ConvertImageDtype(torch.uint8),
@@ -141,9 +141,9 @@ imagenet_train_transform = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])
 
-imagenet_val_transfortransformsm = .Compose([
-    transforms.Resize(144),
-    transforms.CenterCrop(128),
+imagenet_val_transfortransformsm = transforms.Compose([
+    transforms.Resize(256),
+    transforms.CenterCrop(224),
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 ])

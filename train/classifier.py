@@ -183,10 +183,15 @@ def train_encoder_classifier(
         backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Enable backward prefetching
         # use_orig_params=True, # Often needed for torch.compile compatibility later
         # cpu_offload=CPUOffload(offload_params=True), # Optional: If memory is extremely tight
-        # backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Optional: Sometimes helps overlap
     )
     if rank == 0: print(f"FSDP Model Info:\n{model}")
     # --- End FSDP Configuration ---
+
+    # --- Compile the model (after FSDP) ---
+    if rank == 0: print("Attempting to compile the model with torch.compile...")
+    model = torch.compile(model) # Use default mode first
+    if rank == 0: print("Model compilation successful (or backend selected).")
+    # --- End Compile ---
 
     # --- Optimizer: Must be initialized AFTER FSDP wrapping ---
     # FSDP flattens parameters, so optimizer needs to see the FSDP model params
@@ -440,7 +445,8 @@ def train_encoder_classifier(
                 # --- FSDP: Save Checkpoint (No scaler state) ---
                 save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
                 with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
-                     model_state = model.state_dict()
+                     # model_state = model.state_dict() # Reverted to original
+                     model_state = model.state_dict() # Reverted to original
                      opt_state = optimizer.state_dict()
 
                 if rank == 0: # Save only on rank 0
@@ -463,7 +469,8 @@ def train_encoder_classifier(
                           counter = 0
                           # Save best model state dict using the same FSDP context
                           with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
-                               best_model_state = model.state_dict()
+                               # best_model_state = model.state_dict() # Access underlying module - Reverting
+                               best_model_state = model.state_dict() # Reverted to original
                           torch.save(best_model_state, "best_model.pth") # Save only the state dict
                      else:
                           counter += 1

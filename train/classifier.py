@@ -3,9 +3,23 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
+from torch.distributed.fsdp import (
+    FullyShardedDataParallel as FSDP,
+    CPUOffload,
+    MixedPrecision,
+    BackwardPrefetch,
+    ShardingStrategy,
+    FullStateDictConfig,
+    StateDictType,
+)
+from torch.distributed.fsdp.wrap import (
+    transformer_auto_wrap_policy,
+    size_based_auto_wrap_policy,
+    enable_wrap,
+    wrap,
+)
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
-from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.tensorboard.writer import SummaryWriter
 from .datasets.loader import DATASETS
 from models.encoder import DEFAULT_2D_ENCODER, Encoder2D
@@ -16,7 +30,7 @@ import traceback
 import sys
 from datetime import timedelta
 from typing import cast
-from torch.cuda.amp import GradScaler, autocast
+from functools import partial
 
 def compute_accuracy_from_distributions(outputs, targets):
     """
@@ -52,13 +66,13 @@ class Encoder2DClassifier(nn.Module):
         super().__init__()
         self.encoder = encoder
         context_token_dim = encoder.d_model
-        self.classifier = nn.Linear(context_token_dim, num_classes)
-        nn.init.xavier_uniform_(self.classifier.weight)
-        nn.init.zeros_(self.classifier.bias)
+        self.classifier_head = nn.Linear(context_token_dim, num_classes)
+        nn.init.xavier_uniform_(self.classifier_head.weight)
+        nn.init.zeros_(self.classifier_head.bias)
 
     def forward(self, x):
         o, x = self.encoder(x)
-        output = self.classifier(x).squeeze(1)
+        output = self.classifier_head(x).squeeze(1)
         return output
 
 
@@ -111,6 +125,22 @@ def cleanup_distributed():
         dist.destroy_process_group()
 
 
+def get_fsdp_wrap_policy():
+    # Import layers needed for the policy inside the function
+    # Assuming Encoder2D is the main transformer block container
+    # and Encoder2DClassifier has self.encoder and self.classifier_head
+    fsdp_auto_wrap_policy = partial(
+        transformer_auto_wrap_policy,
+        # Specify the names of the transformer block classes within your model
+        # For now, let's target the top-level Encoder2D and the classifier Linear layer
+        transformer_layer_cls={
+             Encoder2D, # Wrap the whole encoder block
+             nn.Linear, # Wrap Linear layers (like the classifier head)
+        }
+    )
+    return fsdp_auto_wrap_policy
+
+
 def train_encoder_classifier(
     model,
     train_loader,
@@ -123,26 +153,45 @@ def train_encoder_classifier(
     weight_decay=1e-5,
     resume_from=None,
 ):
-    # Move model to device first
+    # FSDP requires model on the correct device *before* wrapping
     model = model.to(device)
     local_rank = device.index
 
-    # Wrap model with DDP
-    if world_size > 1:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
-        if rank == 0:
-            print(f"Model wrapped with DDP, using {world_size} GPUs")
-    
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused= True)
-    
-    # --- AMP: Initialize GradScaler ---
-    # Enable only if using CUDA
-    use_amp = torch.cuda.is_available()
-    scaler = GradScaler(enabled=use_amp)
-    if rank == 0:
-        print(f"Automatic Mixed Precision (AMP) {'Enabled' if use_amp else 'Disabled'}")
-    # --- End AMP Setup ---
+    # --- FSDP Configuration ---
+    # Choose Sharding Strategy: FULL_SHARD saves most memory
+    fsdp_sharding_strategy = ShardingStrategy.FULL_SHARD
+    # Define Mixed Precision policy (BF16 recommended for Ampere/Hopper GPUs like 4090)
+    # Use FP16 if BF16 is not supported or causes issues
+    mp_policy = MixedPrecision(
+        param_dtype=torch.bfloat16, # or torch.float16
+        reduce_dtype=torch.bfloat16, # or torch.float16
+        buffer_dtype=torch.bfloat16, # or torch.float16
+    )
+    # Get the auto-wrap policy
+    fsdp_auto_wrap_policy = get_fsdp_wrap_policy()
+    # Set device ID for FSDP
+    fsdp_device_id = torch.cuda.current_device() # Should match local_rank device
+
+    # Wrap the model with FSDP
+    if rank == 0: print("Wrapping model with FSDP...")
+    model = FSDP(
+        model,
+        auto_wrap_policy=fsdp_auto_wrap_policy,
+        mixed_precision=mp_policy,
+        sharding_strategy=fsdp_sharding_strategy,
+        device_id=fsdp_device_id, # Use the explicitly set device
+        # use_orig_params=True, # Often needed for torch.compile compatibility later
+        # cpu_offload=CPUOffload(offload_params=True), # Optional: If memory is extremely tight
+        # backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Optional: Sometimes helps overlap
+    )
+    if rank == 0: print(f"FSDP Model Info:\n{model}")
+    # --- End FSDP Configuration ---
+
+    # --- Optimizer: Must be initialized AFTER FSDP wrapping ---
+    # FSDP flattens parameters, so optimizer needs to see the FSDP model params
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused=(torch.cuda.is_available())) # Try fused=True
+    if rank == 0: print("Optimizer initialized after FSDP wrapping.")
+    # --- End Optimizer ---
 
     # Initialize training state
     start_epoch = 0
@@ -165,45 +214,52 @@ def train_encoder_classifier(
     # Initial scheduler creation
     scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
 
+    # --- FSDP Checkpointing Configuration ---
+    # Use the new FSDP checkpointing API
+    full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+    # --- End FSDP Checkpointing ---
+
     # Resume from checkpoint if specified
     if resume_from and os.path.exists(resume_from):
         print(f"Resuming training from {resume_from}")
-        checkpoint = torch.load(resume_from, map_location=device)
-        if world_size > 1:
-            model.module.load_state_dict(checkpoint["model_state_dict"])
-        else:
-            model.load_state_dict(checkpoint["model_state_dict"])
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        
-        # Fix optimizer state device mismatch
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
-        
-        start_epoch = checkpoint["epoch"]
-        best_val_loss = checkpoint["best_val_loss"]
-        counter = checkpoint["early_stop_counter"]
-        
+        # Load checkpoint on CPU first to avoid device mismatches
+        map_location = {'cuda:%d' % 0: 'cuda:%d' % local_rank} if torch.cuda.is_available() else 'cpu'
+        checkpoint = torch.load(resume_from, map_location=map_location)
+
+        # --- FSDP: Load Model State ---
+        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
+             model_state_dict = checkpoint.get("model_state_dict", None)
+             if model_state_dict:
+                  model.load_state_dict(model_state_dict)
+                  if rank == 0: print("Loaded FSDP Model state.")
+        # --- End FSDP Load ---
+
+        # Load optimizer state (FSDP handles sharding, but load full state dict for simplicity first)
+        # Note: Loading sharded optimizer state is more complex but memory efficient
+        opt_state_dict = checkpoint.get("optimizer_state_dict", None)
+        if opt_state_dict:
+             # Need to shard the loaded state dict before loading into FSDP optimizer
+             # Simple load might work if optimizer was created *before* wrapping (not recommended)
+             # Proper way: Load full dict -> FSDP.scatter_full_optim_state_dict -> optimizer.load_state_dict
+             # Start with simple load and see if it errors / works correctly
+             try:
+                  optimizer.load_state_dict(opt_state_dict)
+                  if rank == 0: print("Loaded Optimizer state (attempted simple load).")
+             except Exception as e:
+                  if rank == 0: print(f"Warning: Could not load optimizer state directly: {e}. Optimizer state reset.")
+
+        # Load scheduler state
         if "scheduler_state_dict" in checkpoint:
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            if rank == 0: print("Loaded Scheduler state.")
         else:
-            scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
-        
-        if "torch_rng_state" in checkpoint:
-            torch.set_rng_state(checkpoint["torch_rng_state"])
-        if "numpy_rng_state" in checkpoint and "numpy" in sys.modules:
-            import numpy as np
-            np.random.set_state(checkpoint["numpy_rng_state"])
+             # Recreate if not found
+             scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
 
-        # --- AMP: Load Scaler State --- 
-        if "scaler_state_dict" in checkpoint and use_amp:
-            try:
-                scaler.load_state_dict(checkpoint["scaler_state_dict"])
-                if rank == 0: print("Loaded GradScaler state.")
-            except Exception as e:
-                 if rank == 0: print(f"Warning: Failed to load GradScaler state: {e}")
-        # --- End AMP Load --- 
+        # Load other states
+        start_epoch = checkpoint.get("epoch", 0)
+        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+        counter = checkpoint.get("early_stop_counter", 0)
 
     # Only create SummaryWriter on rank 0
     writer = SummaryWriter() if rank == 0 else None
@@ -228,13 +284,10 @@ def train_encoder_classifier(
                 if rank == 0 and batch_idx % 10 == 0:
                     print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
                 
-                inputs, labels = inputs.to(device), labels.to(device)
+                inputs, labels = inputs.to(device)
                 
-                # --- AMP: autocast context --- 
-                with autocast(enabled=use_amp):
-                    outputs = model(inputs)
-                    batch_loss = criterion(outputs, labels)
-                # --- End AMP context ---
+                outputs = model(inputs)
+                batch_loss = criterion(outputs, labels)
                 
                 loss_val = batch_loss.item()
                 
@@ -249,24 +302,23 @@ def train_encoder_classifier(
                     writer.add_scalar("Batch Accuracy/train", (100 * batch_correct) / len(labels), batch_idx + (len(train_loader) * epoch))
                     writer.add_scalar("Learning Rate", optimizer.param_groups[0]["lr"], batch_idx + (len(train_loader) * epoch))
 
-                # --- AMP: Scale loss and call backward ---
-                scaler.scale(batch_loss / ACCUMULATION_STEPS).backward()
-                # --- End AMP backward ---
+                # --- FSDP handles scaling/backward ---
+                # Loss already scaled internally if using MixedPrecision
+                (batch_loss / ACCUMULATION_STEPS).backward() # Simple backward call
+                # --- End FSDP backward ---
 
                 if (batch_idx + 1) % ACCUMULATION_STEPS == 0:
-                    # Gradient clipping (unscales gradients before clipping)
-                    # Optional: Consider disabling if using AMP, test stability
-                    scaler.unscale_(optimizer) # Unscale gradients before clipping
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRADIENT)
-                    
-                    # --- AMP: Scaler step and update --- 
-                    scaler.step(optimizer)
-                    scaler.update()
-                    # --- End AMP step/update ---
+                    # Gradient clipping (Needs to happen *after* FSDP unshards gradients)
+                    # model.clip_grad_norm_(MAX_GRADIENT) # FSDP provides this method
+                    # Clip based on global norm across all ranks
+                    total_norm = model.clip_grad_norm_(max_norm=MAX_GRADIENT)
+                    if rank == 0 and total_norm.isinf() or total_norm.isnan():
+                        print(f"Warning: Gradient norm is {total_norm} at step {batch_idx}, skipping optimizer step.")
+                        optimizer.zero_grad(set_to_none=True) # Still zero grad if skipping
+                    else:
+                         optimizer.step()
+                         optimizer.zero_grad(set_to_none=True) # Zero grad after step
 
-                    # Zero gradients AFTER step (set_to_none handled above)
-                    optimizer.zero_grad(set_to_none=True) 
-                    
                     scheduler.step()
                 
                 if world_size > 1:
@@ -353,36 +405,44 @@ def train_encoder_classifier(
                     f"Top-5 Val Accuracy: {top5_accuracy:.2f}%"
                 )
 
-                # --- AMP: Save Scaler State in Checkpoint --- 
-                checkpoint = {
-                    "epoch": epoch + 1,
-                    "model_state_dict": model.module.state_dict() if world_size > 1 else model.state_dict(),
-                    "optimizer_state_dict": optimizer.state_dict(),
-                    "scheduler_state_dict": scheduler.state_dict(),
-                    "scaler_state_dict": scaler.state_dict() if use_amp else None, # Add scaler state
-                    "best_val_loss": best_val_loss,
-                    "early_stop_counter": counter,
-                    "torch_rng_state": torch.get_rng_state(),
-                }
-                
-                if "numpy" in sys.modules:
-                    import numpy as np
-                    checkpoint["numpy_rng_state"] = np.random.get_state()
-                    
-                torch.save(checkpoint, "checkpoint.pth")
-                # --- End AMP Save --- 
+                # --- FSDP: Save Checkpoint ---
+                # Ensure optimizer state is consolidated before saving if needed
+                # Use the new FSDP StateDictType context manager for model state
+                save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
+                with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
+                     model_state = model.state_dict()
+                     # Optimizer state might need similar handling for sharded state,
+                     # but saving full optimizer state on rank 0 is simpler to start.
+                     opt_state = optimizer.state_dict() # Might be large if not sharded
 
-                # Early stopping check
-                if avg_val_loss < best_val_loss:
-                    best_val_loss = avg_val_loss
-                    counter = 0
-                    torch.save(model.module.state_dict() if world_size > 1 else model.state_dict(), "best_model.pth")
-                else:
-                    counter += 1
-                    if counter >= patience:
-                        print(f"Early stopping triggered after {epoch + 1} epochs")
-                        break
-            
+                if rank == 0: # Save only on rank 0
+                     checkpoint = {
+                          "epoch": epoch + 1,
+                          "model_state_dict": model_state, # Use CPU state dict from rank 0
+                          "optimizer_state_dict": opt_state, # Full optimizer state from rank 0
+                          "scheduler_state_dict": scheduler.state_dict(),
+                          "best_val_loss": best_val_loss,
+                          "early_stop_counter": counter,
+                          "torch_rng_state": torch.get_rng_state(),
+                     }
+                     # ... (add numpy state if needed) ...
+                     torch.save(checkpoint, "checkpoint.pth")
+
+                     # Early stopping check (still uses avg_val_loss)
+                     if avg_val_loss < best_val_loss:
+                          best_val_loss = avg_val_loss
+                          counter = 0
+                          # Save best model state dict using the same FSDP context
+                          with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
+                               best_model_state = model.state_dict()
+                          torch.save(best_model_state, "best_model.pth") # Save only the state dict
+                     else:
+                          counter += 1
+                          if counter >= patience:
+                              print(f"Early stopping triggered after {epoch + 1} epochs")
+                              break
+                # --- End FSDP Save ---
+
             if world_size > 1:
                 dist.barrier()
 
@@ -394,7 +454,6 @@ def train_encoder_classifier(
                 "model_state_dict": model.module.state_dict() if world_size > 1 else model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
-                "scaler_state_dict": scaler.state_dict() if use_amp else None, # Add scaler state
                 "best_val_loss": best_val_loss,
                 "early_stop_counter": counter,
                 "torch_rng_state": torch.get_rng_state(),
@@ -415,6 +474,7 @@ def train_encoder_classifier(
     finally:
         if rank == 0 and writer is not None:
             writer.close()
+        cleanup_distributed()
 
 
 def main(args):

@@ -181,23 +181,14 @@ def train_encoder_classifier(
                 print(f"Epoch {epoch+1}/{num_epochs} - Starting training with {total_batches} batches")
             
             for batch_idx, (inputs, labels) in enumerate(train_loader):
-                if rank == 0:
-                    print(f"Rank {rank}: Starting Batch {batch_idx}")
-
                 if rank == 0 and batch_idx % 10 == 0:
                     print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
                 
                 # Move data to device
                 inputs, labels = inputs.to(device), labels.to(device)
-                if rank == 0:
-                    print(f"Rank {rank}: Data moved to device for Batch {batch_idx}")
                 
                 # Forward pass
-                if rank == 0:
-                    print(f"Rank {rank}: Starting forward pass for Batch {batch_idx}")
                 outputs = model(inputs)
-                if rank == 0:
-                    print(f"Rank {rank}: Finished forward pass for Batch {batch_idx}")
 
                 batch_loss = criterion(outputs, labels)
                 _, predicted = outputs.max(1)

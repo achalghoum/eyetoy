@@ -31,7 +31,8 @@ import sys
 from datetime import timedelta
 from typing import cast
 from functools import partial
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp.grad_scaler import GradScaler
+from torch.amp.autocast_mode import autocast
 
 def compute_accuracy_from_distributions(outputs, targets):
     """
@@ -218,7 +219,7 @@ def train_encoder_classifier(
 
     # --- GradScaler for Mixed Precision ---
     # Enabled=True is default, can be conditional if mixed precision is optional
-    scaler = GradScaler()
+    scaler = GradScaler(enabled=torch.cuda.is_available())
     if rank == 0: print(f"GradScaler Initialized: Enabled={scaler.is_enabled()}")
     # --- End GradScaler ---
 
@@ -302,7 +303,7 @@ def train_encoder_classifier(
                 labels = labels.to(device)
 
                 # --- Mixed Precision: Autocast Forward Pass ---
-                with autocast(dtype=mp_dtype):
+                with autocast(device_type='cuda', dtype=mp_dtype):
                     outputs = model(inputs)
                     batch_loss = criterion(outputs, labels)
                 # --- End Autocast ---
@@ -383,7 +384,7 @@ def train_encoder_classifier(
                 for inputs, labels in val_loader:
                     inputs, labels = inputs.to(device), labels.to(device)
                     # --- Mixed Precision: Autocast Forward Pass ---
-                    with autocast(dtype=mp_dtype):
+                    with autocast(device_type='cuda', dtype=mp_dtype):
                         outputs = model(inputs)
                         loss = criterion(outputs, labels)
                     # --- End Autocast ---

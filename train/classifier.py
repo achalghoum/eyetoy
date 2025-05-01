@@ -134,7 +134,7 @@ def train_encoder_classifier(
             print(f"Model wrapped with DDP, using {world_size} GPUs")
     
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused= True)
     
     # --- AMP: Initialize GradScaler ---
     # Enable only if using CUDA

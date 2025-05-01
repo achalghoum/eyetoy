@@ -181,7 +181,7 @@ def train_encoder_classifier(
         device_id=fsdp_device_id,
         forward_prefetch=True, # Enable forward prefetching
         backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Enable backward prefetching
-        # use_orig_params=True, # Often needed for torch.compile compatibility later
+        use_orig_params=True, # Uncommented: Required for torch.compile compatibility
         # cpu_offload=CPUOffload(offload_params=True), # Optional: If memory is extremely tight
     )
     if rank == 0: print(f"FSDP Model Info:\n{model}")

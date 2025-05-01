@@ -495,16 +495,15 @@ def train(rank, world_size, args):
             effective_batch_size = args.batch_size
             
             # DataLoader kwargs that are conditional
-            num_workers = 0  # Use 0 to debug deadlocks
+            num_workers = 4 # <-- CHANGE HERE: Start with 4 workers per DataLoader
             dataloader_kwargs = {
                 'batch_size': effective_batch_size,
-                'pin_memory': True,
+                'pin_memory': True, # Keep pin_memory=True for faster CPU->GPU transfer
                 'num_workers': num_workers,
             }
-            
             # Only add timeout when using workers
             if num_workers > 0:
-                dataloader_kwargs['timeout'] = 60
+                 dataloader_kwargs['timeout'] = 120 # Increase timeout slightly
             
             train_loader = DataLoader(
                 train_dataset,

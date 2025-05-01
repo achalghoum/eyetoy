@@ -214,7 +214,8 @@ def train_encoder_classifier(
     # --- End Profiler Setup ---
 
     try:
-        if rank == 0 and prof: # Start profiler if it exists
+        # ADD BACK: Start profiler manually before the loop
+        if rank == 0 and prof:
             prof.start()
 
         for epoch in range(start_epoch, num_epochs):
@@ -236,59 +237,57 @@ def train_encoder_classifier(
                 print(f"Epoch {epoch+1}/{num_epochs} - Starting training with {total_batches} batches")
             
             for batch_idx, (inputs, labels) in enumerate(train_loader):
-                # Wrap the core step logic with the profiler context
-                with (prof if rank == 0 and prof else contextlib.nullcontext()) as p:
-                    if rank == 0 and batch_idx % 10 == 0:
-                        print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
-                    
-                    # Move data to device
-                    inputs, labels = inputs.to(device), labels.to(device)
-                    
-                    # Forward pass
-                    outputs = model(inputs)
-                    batch_loss = criterion(outputs, labels)
-                    
-                    # Separate loss calculation for profiling clarity
-                    loss_val = batch_loss.item()
-                    
-                    _, predicted = outputs.max(1)
-                    batch_correct = predicted.eq(labels).sum().item()
-                    
-                    # Track metrics locally
-                    train_correct += batch_correct
-                    train_loss += loss_val
-                    
-                    # Log batch metrics if rank 0
-                    if rank == 0 and writer is not None:
-                        writer.add_scalar(
-                            "Batch Loss/train",
-                            loss_val,
-                            batch_idx + (len(train_loader) * epoch),
-                        )
-                        writer.add_scalar(
-                            "Batch Accuracy/train",
-                            (100 * batch_correct) / len(labels),
-                            batch_idx + (len(train_loader) * epoch),
-                        )
-                        writer.add_scalar(
-                            "Learning Rate",
-                            optimizer.param_groups[0]["lr"],
-                            batch_idx + (len(train_loader) * epoch),
-                        )
+                if rank == 0 and batch_idx % 10 == 0:
+                    print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
+                
+                # Move data to device
+                inputs, labels = inputs.to(device), labels.to(device)
+                
+                # Forward pass
+                outputs = model(inputs)
+                batch_loss = criterion(outputs, labels)
+                
+                # Separate loss calculation for profiling clarity
+                loss_val = batch_loss.item()
+                
+                _, predicted = outputs.max(1)
+                batch_correct = predicted.eq(labels).sum().item()
+                
+                # Track metrics locally
+                train_correct += batch_correct
+                train_loss += loss_val
+                
+                # Log batch metrics if rank 0
+                if rank == 0 and writer is not None:
+                    writer.add_scalar(
+                        "Batch Loss/train",
+                        loss_val,
+                        batch_idx + (len(train_loader) * epoch),
+                    )
+                    writer.add_scalar(
+                        "Batch Accuracy/train",
+                        (100 * batch_correct) / len(labels),
+                        batch_idx + (len(train_loader) * epoch),
+                    )
+                    writer.add_scalar(
+                        "Learning Rate",
+                        optimizer.param_groups[0]["lr"],
+                        batch_idx + (len(train_loader) * epoch),
+                    )
 
-                    # Accumulate gradients and optimize
-                    scaled_loss = batch_loss / ACCUMULATION_STEPS
-                    scaled_loss.backward()
+                # Accumulate gradients and optimize
+                scaled_loss = batch_loss / ACCUMULATION_STEPS
+                scaled_loss.backward()
 
-                    if (batch_idx + 1) % ACCUMULATION_STEPS == 0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRADIENT)
-                        optimizer.step()
-                        model.zero_grad()
-                        scheduler.step()
-                    
-                    # Signal profiler step completion (inside the profiler context)
-                    if rank == 0 and p: 
-                        p.step()
+                if (batch_idx + 1) % ACCUMULATION_STEPS == 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRADIENT)
+                    optimizer.step()
+                    model.zero_grad()
+                    scheduler.step() # Step scheduler after optimizer
+                
+                # Signal profiler step completion (outside the removed context)
+                if rank == 0 and prof:
+                    prof.step()
 
                 # Synchronize processes after each batch to prevent hanging
                 if world_size > 1:
@@ -434,7 +433,8 @@ def train_encoder_classifier(
             traceback.print_exc()
 
     finally:
-        if rank == 0 and prof: # Stop profiler if it exists
+        # ADD BACK: Stop profiler manually after the loop
+        if rank == 0 and prof:
             prof.stop()
         if rank == 0 and writer is not None:
             writer.close()

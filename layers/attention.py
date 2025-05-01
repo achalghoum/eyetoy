@@ -21,6 +21,9 @@ from params import ConvParams, NeighborhoodAttentionParams, HeadParams
 
 natten.use_fused_na()
 
+# Enable KV parallelism
+natten.use_kv_parallelism_in_fused_na(True)
+natten.set_memory_usage_preference("unrestricted")
 
 class NA(ABC, Module, Generic[ConvType]):
     conv_type: Type[ConvType]

@@ -15,8 +15,6 @@ import time
 import traceback
 import sys
 from datetime import timedelta
-import contextlib
-import torch.profiler
 from typing import cast
 
 def compute_accuracy_from_distributions(outputs, targets):
@@ -123,23 +121,19 @@ def train_encoder_classifier(
     world_size,
     weight_decay=1e-5,
     resume_from=None,
-    log_dir="./profiler_logs",
 ):
     # Move model to device first
     model = model.to(device)
-    local_rank = device.index # Assumes device is like torch.device('cuda:N')
+    local_rank = device.index
 
     # Wrap model with DDP
     if world_size > 1:
-        # Pass the local rank for device_ids
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False) # Consider find_unused if needed
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
         if rank == 0:
             print(f"Model wrapped with DDP, using {world_size} GPUs")
     
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(
-        model.parameters(), lr=learning_rate, weight_decay=weight_decay
-    )
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
     # Initialize training state
     start_epoch = 0
@@ -196,30 +190,8 @@ def train_encoder_classifier(
     # Only create SummaryWriter on rank 0
     writer = SummaryWriter() if rank == 0 else None
 
-    # --- Profiler Setup (Rank 0 Only) ---
-    prof = None
-    if rank == 0:
-        print(f"Profiler logs will be saved to: {log_dir}")
-        os.makedirs(log_dir, exist_ok=True)
-        prof_schedule = torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=2)
-        prof = torch.profiler.profile(
-            schedule=prof_schedule,
-            on_trace_ready=torch.profiler.tensorboard_trace_handler(log_dir),
-            record_shapes=True,
-            profile_memory=True,
-            with_stack=True,
-            activities=[ # Specify activities explicitly
-                torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]
-        )
-    # --- End Profiler Setup ---
-
     try:
-        # ADD BACK: Start profiler manually before the loop
-        if rank == 0 and prof:
-            prof.start()
-
         for epoch in range(start_epoch, num_epochs):
-            # Set epoch for distributed sampler
             if world_size > 1:
                 if hasattr(train_loader.sampler, 'set_epoch'):
                     train_loader.sampler.set_epoch(epoch)
@@ -230,7 +202,6 @@ def train_encoder_classifier(
             optimizer.zero_grad()
             model.zero_grad()
 
-            # Use a separate variable to track batch progress
             total_batches = len(train_loader)
             
             if rank == 0:
@@ -240,42 +211,22 @@ def train_encoder_classifier(
                 if rank == 0 and batch_idx % 10 == 0:
                     print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
                 
-                # Move data to device
                 inputs, labels = inputs.to(device), labels.to(device)
-                
-                # Forward pass
                 outputs = model(inputs)
                 batch_loss = criterion(outputs, labels)
-                
-                # Separate loss calculation for profiling clarity
                 loss_val = batch_loss.item()
                 
                 _, predicted = outputs.max(1)
                 batch_correct = predicted.eq(labels).sum().item()
                 
-                # Track metrics locally
                 train_correct += batch_correct
                 train_loss += loss_val
                 
-                # Log batch metrics if rank 0
                 if rank == 0 and writer is not None:
-                    writer.add_scalar(
-                        "Batch Loss/train",
-                        loss_val,
-                        batch_idx + (len(train_loader) * epoch),
-                    )
-                    writer.add_scalar(
-                        "Batch Accuracy/train",
-                        (100 * batch_correct) / len(labels),
-                        batch_idx + (len(train_loader) * epoch),
-                    )
-                    writer.add_scalar(
-                        "Learning Rate",
-                        optimizer.param_groups[0]["lr"],
-                        batch_idx + (len(train_loader) * epoch),
-                    )
+                    writer.add_scalar("Batch Loss/train", loss_val, batch_idx + (len(train_loader) * epoch))
+                    writer.add_scalar("Batch Accuracy/train", (100 * batch_correct) / len(labels), batch_idx + (len(train_loader) * epoch))
+                    writer.add_scalar("Learning Rate", optimizer.param_groups[0]["lr"], batch_idx + (len(train_loader) * epoch))
 
-                # Accumulate gradients and optimize
                 scaled_loss = batch_loss / ACCUMULATION_STEPS
                 scaled_loss.backward()
 
@@ -283,17 +234,11 @@ def train_encoder_classifier(
                     torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRADIENT)
                     optimizer.step()
                     model.zero_grad()
-                    scheduler.step() # Step scheduler after optimizer
+                    scheduler.step()
                 
-                # Signal profiler step completion (outside the removed context)
-                if rank == 0 and prof:
-                    prof.step()
-
-                # Synchronize processes after each batch to prevent hanging
                 if world_size > 1:
                     dist.barrier()
 
-            # Make sure all processes finish training before validation
             if world_size > 1:
                 # Convert metrics to tensors for all_reduce
                 train_loss_tensor = torch.tensor(train_loss).to(device)
@@ -403,7 +348,6 @@ def train_encoder_classifier(
                         print(f"Early stopping triggered after {epoch + 1} epochs")
                         break
             
-            # Make sure all processes are synchronized before next epoch
             if world_size > 1:
                 dist.barrier()
 
@@ -433,9 +377,6 @@ def train_encoder_classifier(
             traceback.print_exc()
 
     finally:
-        # ADD BACK: Stop profiler manually after the loop
-        if rank == 0 and prof:
-            prof.stop()
         if rank == 0 and writer is not None:
             writer.close()
 
@@ -561,12 +502,11 @@ def main(args):
             val_loader,
             num_epochs=args.epochs,
             learning_rate=learning_rate,
-            device=device, # Pass cuda:local_rank
-            rank=rank,     # Pass global rank
+            device=device,
+            rank=rank,
             world_size=world_size,
             weight_decay=args.weight_decay,
             resume_from=args.resume,
-            log_dir=args.log_dir
         )
     except Exception as e:
         if rank == 0:
@@ -588,9 +528,6 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-3, help="Base Learning Rate (will be scaled by world_size)")
     parser.add_argument("--batch_size", type=int, default=64, help="Per-GPU Batch Size")
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="Weight Decay")
-    parser.add_argument("--log_dir", type=str, default="./profiler_logs", help="Directory for profiler logs")
-    # Add num_workers arg?
-    # parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers per process")
     args = parser.parse_args()
 
     main(args)

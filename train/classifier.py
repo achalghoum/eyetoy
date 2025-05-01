@@ -16,6 +16,7 @@ import traceback
 import sys
 from datetime import timedelta
 from typing import cast
+from torch.cuda.amp import GradScaler, autocast
 
 def compute_accuracy_from_distributions(outputs, targets):
     """
@@ -135,6 +136,14 @@ def train_encoder_classifier(
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
+    # --- AMP: Initialize GradScaler ---
+    # Enable only if using CUDA
+    use_amp = torch.cuda.is_available()
+    scaler = GradScaler(enabled=use_amp)
+    if rank == 0:
+        print(f"Automatic Mixed Precision (AMP) {'Enabled' if use_amp else 'Disabled'}")
+    # --- End AMP Setup ---
+
     # Initialize training state
     start_epoch = 0
     best_val_loss = float("inf")
@@ -187,6 +196,15 @@ def train_encoder_classifier(
             import numpy as np
             np.random.set_state(checkpoint["numpy_rng_state"])
 
+        # --- AMP: Load Scaler State --- 
+        if "scaler_state_dict" in checkpoint and use_amp:
+            try:
+                scaler.load_state_dict(checkpoint["scaler_state_dict"])
+                if rank == 0: print("Loaded GradScaler state.")
+            except Exception as e:
+                 if rank == 0: print(f"Warning: Failed to load GradScaler state: {e}")
+        # --- End AMP Load --- 
+
     # Only create SummaryWriter on rank 0
     writer = SummaryWriter() if rank == 0 else None
 
@@ -199,8 +217,7 @@ def train_encoder_classifier(
             model.train()
             train_loss = 0
             train_correct = 0
-            optimizer.zero_grad()
-            model.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             total_batches = len(train_loader)
             
@@ -212,8 +229,13 @@ def train_encoder_classifier(
                     print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
                 
                 inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                batch_loss = criterion(outputs, labels)
+                
+                # --- AMP: autocast context --- 
+                with autocast(enabled=use_amp):
+                    outputs = model(inputs)
+                    batch_loss = criterion(outputs, labels)
+                # --- End AMP context ---
+                
                 loss_val = batch_loss.item()
                 
                 _, predicted = outputs.max(1)
@@ -227,13 +249,24 @@ def train_encoder_classifier(
                     writer.add_scalar("Batch Accuracy/train", (100 * batch_correct) / len(labels), batch_idx + (len(train_loader) * epoch))
                     writer.add_scalar("Learning Rate", optimizer.param_groups[0]["lr"], batch_idx + (len(train_loader) * epoch))
 
-                scaled_loss = batch_loss / ACCUMULATION_STEPS
-                scaled_loss.backward()
+                # --- AMP: Scale loss and call backward ---
+                scaler.scale(batch_loss / ACCUMULATION_STEPS).backward()
+                # --- End AMP backward ---
 
                 if (batch_idx + 1) % ACCUMULATION_STEPS == 0:
+                    # Gradient clipping (unscales gradients before clipping)
+                    # Optional: Consider disabling if using AMP, test stability
+                    scaler.unscale_(optimizer) # Unscale gradients before clipping
                     torch.nn.utils.clip_grad_norm_(model.parameters(), MAX_GRADIENT)
-                    optimizer.step()
-                    model.zero_grad()
+                    
+                    # --- AMP: Scaler step and update --- 
+                    scaler.step(optimizer)
+                    scaler.update()
+                    # --- End AMP step/update ---
+
+                    # Zero gradients AFTER step (set_to_none handled above)
+                    optimizer.zero_grad(set_to_none=True) 
+                    
                     scheduler.step()
                 
                 if world_size > 1:
@@ -320,12 +353,13 @@ def train_encoder_classifier(
                     f"Top-5 Val Accuracy: {top5_accuracy:.2f}%"
                 )
 
-                # Save checkpoint every epoch
+                # --- AMP: Save Scaler State in Checkpoint --- 
                 checkpoint = {
                     "epoch": epoch + 1,
                     "model_state_dict": model.module.state_dict() if world_size > 1 else model.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "scheduler_state_dict": scheduler.state_dict(),
+                    "scaler_state_dict": scaler.state_dict() if use_amp else None, # Add scaler state
                     "best_val_loss": best_val_loss,
                     "early_stop_counter": counter,
                     "torch_rng_state": torch.get_rng_state(),
@@ -336,6 +370,7 @@ def train_encoder_classifier(
                     checkpoint["numpy_rng_state"] = np.random.get_state()
                     
                 torch.save(checkpoint, "checkpoint.pth")
+                # --- End AMP Save --- 
 
                 # Early stopping check
                 if avg_val_loss < best_val_loss:
@@ -359,6 +394,7 @@ def train_encoder_classifier(
                 "model_state_dict": model.module.state_dict() if world_size > 1 else model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
+                "scaler_state_dict": scaler.state_dict() if use_amp else None, # Add scaler state
                 "best_val_loss": best_val_loss,
                 "early_stop_counter": counter,
                 "torch_rng_state": torch.get_rng_state(),

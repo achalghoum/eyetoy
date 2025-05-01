@@ -264,6 +264,11 @@ def train_encoder_classifier(
         best_val_loss = checkpoint.get("best_val_loss", float("inf"))
         counter = checkpoint.get("early_stop_counter", 0)
 
+    # Get the desired dtype from the FSDP policy for input casting
+    input_dtype = mp_policy.param_dtype if mp_policy else torch.float32
+    if rank == 0:
+        print(f"Casting input tensor to: {input_dtype}")
+
     # Only create SummaryWriter on rank 0
     writer = SummaryWriter() if rank == 0 else None
 
@@ -287,9 +292,13 @@ def train_encoder_classifier(
                 if rank == 0 and batch_idx % 10 == 0:
                     print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
                 
-                # FIX: Correctly move both tensors to device
+                # Move tensors to device first
                 inputs = inputs.to(device)
                 labels = labels.to(device)
+
+                # --- Explicitly cast input to target dtype --- 
+                inputs = inputs.to(input_dtype)
+                # --- End input cast ---
                 
                 outputs = model(inputs)
                 batch_loss = criterion(outputs, labels)

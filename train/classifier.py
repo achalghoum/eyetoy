@@ -193,6 +193,9 @@ def train_encoder_classifier(
     if rank == 0: print("Optimizer initialized after FSDP wrapping.")
     # --- End Optimizer ---
 
+    # ADD BACK: Criterion definition
+    criterion = nn.CrossEntropyLoss()
+
     # Initialize training state
     start_epoch = 0
     best_val_loss = float("inf")
@@ -284,7 +287,9 @@ def train_encoder_classifier(
                 if rank == 0 and batch_idx % 10 == 0:
                     print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
                 
-                inputs, labels = inputs.to(device)
+                # FIX: Correctly move both tensors to device
+                inputs = inputs.to(device)
+                labels = labels.to(device)
                 
                 outputs = model(inputs)
                 batch_loss = criterion(outputs, labels)

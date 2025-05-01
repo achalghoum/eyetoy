@@ -163,9 +163,9 @@ def train_encoder_classifier(
     # Define Mixed Precision policy (BF16 recommended for Ampere/Hopper GPUs like 4090)
     # Use FP16 if BF16 is not supported or causes issues
     mp_policy = MixedPrecision(
-        param_dtype=torch.bfloat16, # or torch.float16
-        reduce_dtype=torch.bfloat16, # or torch.float16
-        buffer_dtype=torch.bfloat16, # or torch.float16
+        param_dtype=torch.bfloat16, # USING bfloat16
+        reduce_dtype=torch.bfloat16,
+        buffer_dtype=torch.bfloat16,
     )
     # Get the auto-wrap policy
     fsdp_auto_wrap_policy = get_fsdp_wrap_policy()

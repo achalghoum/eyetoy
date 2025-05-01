@@ -70,7 +70,7 @@ def setup(rank, world_size):
     
     # Set timeout to a large value to prevent timeouts during dataset loading
     os.environ['TORCH_NCCL_BLOCKING_WAIT'] = '1'
-    os.environ['NCCL_ASYNC_ERROR_HANDLING'] = '1'
+    os.environ['TORCH_NCCL_ASYNC_ERROR_HANDLING'] = '1'
     
     # Initialize the process group with a timeout
     dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=timedelta(minutes=30))

@@ -129,7 +129,7 @@ def train_encoder_classifier(
 
     # Wrap model with DDP
     if world_size > 1:
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
         if rank == 0:
             print(f"Model wrapped with DDP, using {world_size} GPUs")
     

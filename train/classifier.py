@@ -158,28 +158,17 @@ def train_encoder_classifier(
     local_rank = device.index
 
     # --- FSDP Configuration ---
-    # Choose Sharding Strategy: FULL_SHARD saves most memory
     fsdp_sharding_strategy = ShardingStrategy.FULL_SHARD
-    # Define Mixed Precision policy (BF16 recommended for Ampere/Hopper GPUs like 4090)
-    # Use FP16 if BF16 is not supported or causes issues
-    mp_policy = MixedPrecision(
-        param_dtype=torch.bfloat16, # USING bfloat16
-        reduce_dtype=torch.bfloat16,
-        buffer_dtype=torch.bfloat16,
-    )
-    # Get the auto-wrap policy
     fsdp_auto_wrap_policy = get_fsdp_wrap_policy()
-    # Set device ID for FSDP
-    fsdp_device_id = torch.cuda.current_device() # Should match local_rank device
+    fsdp_device_id = torch.cuda.current_device()
 
-    # Wrap the model with FSDP
-    if rank == 0: print("Wrapping model with FSDP...")
+    if rank == 0: print("Wrapping model with FSDP (FP32 - Mixed Precision Disabled)...")
     model = FSDP(
         model,
         auto_wrap_policy=fsdp_auto_wrap_policy,
-        mixed_precision=mp_policy,
+        mixed_precision=None,
         sharding_strategy=fsdp_sharding_strategy,
-        device_id=fsdp_device_id, # Use the explicitly set device
+        device_id=fsdp_device_id,
         # use_orig_params=True, # Often needed for torch.compile compatibility later
         # cpu_offload=CPUOffload(offload_params=True), # Optional: If memory is extremely tight
         # backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Optional: Sometimes helps overlap
@@ -264,11 +253,6 @@ def train_encoder_classifier(
         best_val_loss = checkpoint.get("best_val_loss", float("inf"))
         counter = checkpoint.get("early_stop_counter", 0)
 
-    # Get the desired dtype from the FSDP policy for input casting
-    input_dtype = mp_policy.param_dtype if mp_policy else torch.float32
-    if rank == 0:
-        print(f"Casting input tensor to: {input_dtype}")
-
     # Only create SummaryWriter on rank 0
     writer = SummaryWriter() if rank == 0 else None
 
@@ -296,10 +280,6 @@ def train_encoder_classifier(
                 inputs = inputs.to(device)
                 labels = labels.to(device)
 
-                # --- Explicitly cast input to target dtype --- 
-                inputs = inputs.to(input_dtype)
-                # --- End input cast ---
-                
                 outputs = model(inputs)
                 batch_loss = criterion(outputs, labels)
                 
@@ -316,15 +296,11 @@ def train_encoder_classifier(
                     writer.add_scalar("Batch Accuracy/train", (100 * batch_correct) / len(labels), batch_idx + (len(train_loader) * epoch))
                     writer.add_scalar("Learning Rate", optimizer.param_groups[0]["lr"], batch_idx + (len(train_loader) * epoch))
 
-                # --- FSDP handles scaling/backward ---
-                # Loss already scaled internally if using MixedPrecision
-                (batch_loss / ACCUMULATION_STEPS).backward() # Simple backward call
-                # --- End FSDP backward ---
+                # Backward call (no scaler needed)
+                (batch_loss / ACCUMULATION_STEPS).backward()
 
                 if (batch_idx + 1) % ACCUMULATION_STEPS == 0:
-                    # Gradient clipping (Needs to happen *after* FSDP unshards gradients)
-                    # model.clip_grad_norm_(MAX_GRADIENT) # FSDP provides this method
-                    # Clip based on global norm across all ranks
+                    # Gradient clipping (no unscale needed)
                     total_norm = model.clip_grad_norm_(max_norm=MAX_GRADIENT)
                     if rank == 0 and total_norm.isinf() or total_norm.isnan():
                         print(f"Warning: Gradient norm is {total_norm} at step {batch_idx}, skipping optimizer step.")
@@ -419,21 +395,17 @@ def train_encoder_classifier(
                     f"Top-5 Val Accuracy: {top5_accuracy:.2f}%"
                 )
 
-                # --- FSDP: Save Checkpoint ---
-                # Ensure optimizer state is consolidated before saving if needed
-                # Use the new FSDP StateDictType context manager for model state
+                # --- FSDP: Save Checkpoint (No scaler state) ---
                 save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
                 with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
                      model_state = model.state_dict()
-                     # Optimizer state might need similar handling for sharded state,
-                     # but saving full optimizer state on rank 0 is simpler to start.
-                     opt_state = optimizer.state_dict() # Might be large if not sharded
+                     opt_state = optimizer.state_dict()
 
                 if rank == 0: # Save only on rank 0
                      checkpoint = {
                           "epoch": epoch + 1,
-                          "model_state_dict": model_state, # Use CPU state dict from rank 0
-                          "optimizer_state_dict": opt_state, # Full optimizer state from rank 0
+                          "model_state_dict": model_state, 
+                          "optimizer_state_dict": opt_state, 
                           "scheduler_state_dict": scheduler.state_dict(),
                           "best_val_loss": best_val_loss,
                           "early_stop_counter": counter,

@@ -160,7 +160,7 @@ def train_encoder_classifier(
     local_rank = device.index
 
     # --- FSDP Configuration ---
-    fsdp_sharding_strategy = ShardingStrategy.FULL_SHARD
+    fsdp_sharding_strategy = ShardingStrategy.SHARD_GRAD_OP
     fsdp_auto_wrap_policy = get_fsdp_wrap_policy()
     fsdp_device_id = torch.cuda.current_device()
 
@@ -180,6 +180,8 @@ def train_encoder_classifier(
         mixed_precision=mixed_precision_policy, # Use the defined policy
         sharding_strategy=fsdp_sharding_strategy,
         device_id=fsdp_device_id,
+        forward_prefetch=True, # Enable forward prefetching
+        backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Enable backward prefetching
         # use_orig_params=True, # Often needed for torch.compile compatibility later
         # cpu_offload=CPUOffload(offload_params=True), # Optional: If memory is extremely tight
         # backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Optional: Sometimes helps overlap

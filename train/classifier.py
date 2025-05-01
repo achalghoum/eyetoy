@@ -31,6 +31,7 @@ import sys
 from datetime import timedelta
 from typing import cast
 from functools import partial
+from torch.cuda.amp import GradScaler, autocast
 
 def compute_accuracy_from_distributions(outputs, targets):
     """
@@ -162,11 +163,20 @@ def train_encoder_classifier(
     fsdp_auto_wrap_policy = get_fsdp_wrap_policy()
     fsdp_device_id = torch.cuda.current_device()
 
-    if rank == 0: print("Wrapping model with FSDP (FP32 - Mixed Precision Disabled)...")
+    # Define the mixed precision policy
+    # Use bfloat16 if available, otherwise float16. BF16 is generally better for training stability.
+    mp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    mixed_precision_policy = MixedPrecision(
+        param_dtype=mp_dtype,
+        reduce_dtype=mp_dtype,
+        buffer_dtype=mp_dtype,
+    )
+
+    if rank == 0: print("Wrapping model with FSDP (Mixed Precision Enabled)...")
     model = FSDP(
         model,
         auto_wrap_policy=fsdp_auto_wrap_policy,
-        mixed_precision=None,
+        mixed_precision=mixed_precision_policy, # Use the defined policy
         sharding_strategy=fsdp_sharding_strategy,
         device_id=fsdp_device_id,
         # use_orig_params=True, # Often needed for torch.compile compatibility later
@@ -206,6 +216,12 @@ def train_encoder_classifier(
     # Initial scheduler creation
     scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
 
+    # --- GradScaler for Mixed Precision ---
+    # Enabled=True is default, can be conditional if mixed precision is optional
+    scaler = GradScaler()
+    if rank == 0: print(f"GradScaler Initialized: Enabled={scaler.is_enabled()}")
+    # --- End GradScaler ---
+
     # --- FSDP Checkpointing Configuration ---
     # Use the new FSDP checkpointing API
     full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
@@ -239,6 +255,11 @@ def train_encoder_classifier(
                   if rank == 0: print("Loaded Optimizer state (attempted simple load).")
              except Exception as e:
                   if rank == 0: print(f"Warning: Could not load optimizer state directly: {e}. Optimizer state reset.")
+
+        # Load scaler state
+        if "scaler_state_dict" in checkpoint and scaler is not None:
+            scaler.load_state_dict(checkpoint["scaler_state_dict"])
+            if rank == 0: print("Loaded GradScaler state.")
 
         # Load scheduler state
         if "scheduler_state_dict" in checkpoint:
@@ -280,10 +301,13 @@ def train_encoder_classifier(
                 inputs = inputs.to(device)
                 labels = labels.to(device)
 
-                outputs = model(inputs)
-                batch_loss = criterion(outputs, labels)
-                
-                loss_val = batch_loss.item()
+                # --- Mixed Precision: Autocast Forward Pass ---
+                with autocast(dtype=mp_dtype):
+                    outputs = model(inputs)
+                    batch_loss = criterion(outputs, labels)
+                # --- End Autocast ---
+
+                loss_val = batch_loss.item() # Get loss value before scaling
                 
                 _, predicted = outputs.max(1)
                 batch_correct = predicted.eq(labels).sum().item()
@@ -296,18 +320,31 @@ def train_encoder_classifier(
                     writer.add_scalar("Batch Accuracy/train", (100 * batch_correct) / len(labels), batch_idx + (len(train_loader) * epoch))
                     writer.add_scalar("Learning Rate", optimizer.param_groups[0]["lr"], batch_idx + (len(train_loader) * epoch))
 
-                # Backward call (no scaler needed)
-                (batch_loss / ACCUMULATION_STEPS).backward()
+                # --- Mixed Precision: Scale Loss and Backward ---
+                # Scale the loss
+                scaled_loss = scaler.scale(batch_loss / ACCUMULATION_STEPS)
+                # Backward pass with scaled loss
+                scaled_loss.backward()
+                # --- End Scaling ---
 
                 if (batch_idx + 1) % ACCUMULATION_STEPS == 0:
-                    # Gradient clipping (no unscale needed)
+                    # --- Mixed Precision: Unscale, Clip, Step, Update ---
+                    # Unscale gradients before clipping
+                    scaler.unscale_(optimizer)
+
+                    # Gradient clipping
                     total_norm = model.clip_grad_norm_(max_norm=MAX_GRADIENT)
                     if rank == 0 and total_norm.isinf() or total_norm.isnan():
                         print(f"Warning: Gradient norm is {total_norm} at step {batch_idx}, skipping optimizer step.")
                         optimizer.zero_grad(set_to_none=True) # Still zero grad if skipping
                     else:
-                         optimizer.step()
-                         optimizer.zero_grad(set_to_none=True) # Zero grad after step
+                         # Optimizer step (uses unscaled gradients)
+                         scaler.step(optimizer)
+                         # Update the scaler for the next iteration
+                         scaler.update()
+                         # Zero grad after step
+                         optimizer.zero_grad(set_to_none=True)
+                    # --- End Mixed Precision Steps ---
 
                     scheduler.step()
                 
@@ -345,8 +382,11 @@ def train_encoder_classifier(
             with torch.no_grad():
                 for inputs, labels in val_loader:
                     inputs, labels = inputs.to(device), labels.to(device)
-                    outputs = model(inputs)
-                    loss = criterion(outputs, labels)
+                    # --- Mixed Precision: Autocast Forward Pass ---
+                    with autocast(dtype=mp_dtype):
+                        outputs = model(inputs)
+                        loss = criterion(outputs, labels)
+                    # --- End Autocast ---
                     val_loss += loss.item()
                     _, predicted = outputs.max(1)
                     val_total += labels.size(0)
@@ -407,6 +447,7 @@ def train_encoder_classifier(
                           "model_state_dict": model_state, 
                           "optimizer_state_dict": opt_state, 
                           "scheduler_state_dict": scheduler.state_dict(),
+                          "scaler_state_dict": scaler.state_dict() if scaler is not None else None, # Save scaler state
                           "best_val_loss": best_val_loss,
                           "early_stop_counter": counter,
                           "torch_rng_state": torch.get_rng_state(),
@@ -440,6 +481,7 @@ def train_encoder_classifier(
                 "model_state_dict": model.module.state_dict() if world_size > 1 else model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "scheduler_state_dict": scheduler.state_dict(),
+                "scaler_state_dict": scaler.state_dict() if scaler is not None else None, # Save scaler state
                 "best_val_loss": best_val_loss,
                 "early_stop_counter": counter,
                 "torch_rng_state": torch.get_rng_state(),

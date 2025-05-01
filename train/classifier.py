@@ -386,6 +386,37 @@ def main(args):
     local_rank, rank, world_size = setup_distributed()
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() and world_size > 0 else "cpu")
 
+    # --- Batch Size Automation --- 
+    if args.batch_size is None:
+        if torch.cuda.is_available():
+            try:
+                props = torch.cuda.get_device_properties(device)
+                total_mem_gb = props.total_memory / (1024**3)
+                # HEURISTIC: Estimate ~2GB VRAM needed per sample? Cap at 256.
+                # This is highly approximate and model-dependent!
+                heuristic_batch_size = min(256, max(8, int(total_mem_gb / 2.0)))
+                args.batch_size = heuristic_batch_size # Set the calculated value
+                if rank == 0:
+                    print(f"[Warning] --batch_size not set. Using heuristic value based on VRAM ({total_mem_gb:.1f}GB): {args.batch_size}")
+                    print(f"[Warning] This is EXPERIMENTAL. Monitor GPU memory ('nvidia-smi') and tune --batch_size manually for optimal performance.")
+            except Exception as e:
+                if rank == 0:
+                    print(f"[Warning] Failed to determine heuristic batch size ({e}). Falling back to default 64.")
+                args.batch_size = 64 # Fallback default
+        else: # CPU
+            args.batch_size = 64 # Default for CPU
+            if rank == 0:
+                 print(f"[Info] No GPU detected. Using default batch size: {args.batch_size}")
+
+        # Synchronize the calculated/default batch size across all processes
+        if world_size > 1:
+            bs_tensor = torch.tensor(args.batch_size, device=device, dtype=torch.long)
+            dist.broadcast(bs_tensor, src=0) # Broadcast from rank 0
+            args.batch_size = bs_tensor.item() # Update args on all ranks
+            # Add barrier to ensure all ranks have the BS before proceeding
+            dist.barrier()
+    # --- End Batch Size Automation ---
+
     # --- Dataset Loading --- (Moved from old 'train' function)
     if rank == 0:
         print(f"Loading dataset: {args.dataset}")
@@ -428,18 +459,29 @@ def main(args):
         num_classes = num_classes_tensor.item()
     # --- End Num Classes ---
 
+    # --- Calculate Optimal DataLoader Workers ---
+    available_cpus = os.cpu_count()
+    # Calculate workers per process, ensuring minimum of 2 if max_workers allows
+    num_workers = min(args.max_workers, available_cpus if available_cpus else args.max_workers) 
+    num_workers = max(2, num_workers) # Ensure at least 2 workers if possible
+    if rank == 0:
+        print(f"System CPU Count: {available_cpus}. Using {num_workers} DataLoader workers per process.")
+        if num_workers > 8:
+             print("Warning: High number of workers detected. Monitor CPU/memory usage.")
+    # --- End Worker Calculation ---
+
     # --- Samplers and Loaders --- (Moved from old 'train' function)
     # ... (Create samplers and loaders, use 'rank' for rank == 0 checks)
     # ... (Set num_workers=4 or from args)
     train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank) if world_size > 1 else None
     val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False) if world_size > 1 else None
 
-    num_workers = 4 # Or use args.num_workers if added
+    # Use calculated num_workers
     dataloader_kwargs = {
-        'batch_size': args.batch_size,
+        'batch_size': args.batch_size, # Keep batch size from args
         'pin_memory': True,
-        'num_workers': num_workers,
-        'persistent_workers': num_workers > 0, # Good practice
+        'num_workers': num_workers, # Use calculated value
+        'persistent_workers': num_workers > 0, 
     }
     if num_workers > 0:
         dataloader_kwargs['timeout'] = 120
@@ -517,17 +559,17 @@ def main(args):
     # --- End Training Call ---
 
 if __name__ == "__main__":
-    # Simplified entry point
-    parser = argparse.ArgumentParser(description="Train Encoder2D Classifier")
+    parser = argparse.ArgumentParser(description="Train Encoder2D Classifier", formatter_class=argparse.ArgumentDefaultsHelpFormatter) # Add formatter
     parser.add_argument(
         "--dataset", type=str, required=True, choices=DATASETS.keys(),
         help="Name of the dataset to use"
     )
     parser.add_argument("--resume", type=str, help="Path to checkpoint to resume from")
     parser.add_argument("--epochs", type=int, default=30, help="Epochs")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Base Learning Rate (will be scaled by world_size)")
-    parser.add_argument("--batch_size", type=int, default=64, help="Per-GPU Batch Size")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Base Learning Rate (scaled by world_size)")
+    parser.add_argument("--batch_size", type=int, default=None, help="Per-GPU Batch Size. If unset, uses heuristic based on VRAM (EXPERIMENTAL)")
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="Weight Decay")
+    parser.add_argument("--max_workers", type=int, default=8, help="Max DataLoader workers per process (limited by CPU cores)")
     args = parser.parse_args()
 
     main(args)

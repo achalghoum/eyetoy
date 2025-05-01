@@ -3,14 +3,10 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
-import torch.multiprocessing as mp
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
-try:
-    from torch.utils.tensorboard import SummaryWriter
-except ImportError:
-    from torch.utils.tensorboard.writer import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 from .datasets.loader import DATASETS
 from models.encoder import DEFAULT_2D_ENCODER, Encoder2D
 from torch.optim.lr_scheduler import OneCycleLR, CosineAnnealingLR
@@ -19,8 +15,9 @@ import time
 import traceback
 import sys
 from datetime import timedelta
-import torch.profiler
 import contextlib
+import torch.profiler
+from typing import cast
 
 def compute_accuracy_from_distributions(outputs, targets):
     """
@@ -66,20 +63,53 @@ class Encoder2DClassifier(nn.Module):
         return output
 
 
-def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
-    
-    # Set timeout to a large value to prevent timeouts during dataset loading
+def setup_distributed():
+    """Initializes the distributed environment."""
+    if not dist.is_available() or not torch.cuda.is_available() or torch.cuda.device_count() <= 1:
+        print("Distributed training not available or not required.")
+        return 0, 0, 1 # local_rank 0, global rank 0, World Size 1
+
+    if 'RANK' not in os.environ or 'WORLD_SIZE' not in os.environ:
+        print("RANK or WORLD_SIZE not set, assuming single process.")
+        return 0, 0, 1 # local_rank 0, global rank 0, World Size 1
+
+    rank = int(os.environ["RANK"])
+    world_size = int(os.environ["WORLD_SIZE"])
+    local_rank = int(os.environ.get("LOCAL_RANK", rank)) # Get local rank if set
+
+    print(f"Initializing process group: Rank {rank}/{world_size}, Local Rank {local_rank}")
+
+    # MASTER_ADDR and MASTER_PORT should be set by torchrun/launch
+    if 'MASTER_ADDR' not in os.environ:
+         os.environ['MASTER_ADDR'] = 'localhost' # Default for single node
+    if 'MASTER_PORT' not in os.environ:
+         os.environ['MASTER_PORT'] = '12355' # Default port
+
+    # Set NCCL options (moved here for consistency)
+    os.environ['NCCL_DEBUG'] = os.environ.get('NCCL_DEBUG', 'WARN') # Default to WARN
     os.environ['TORCH_NCCL_BLOCKING_WAIT'] = '1'
     os.environ['TORCH_NCCL_ASYNC_ERROR_HANDLING'] = '1'
-    
-    # Initialize the process group with a timeout
-    dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=timedelta(minutes=30))
+    os.environ['NCCL_IB_TIMEOUT'] = '30'
+    os.environ['NCCL_IGNORE_DISABLED_P2P'] = '1'
 
+    # Initialize the process group
+    dist.init_process_group(
+        backend="nccl",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(minutes=30)
+    )
 
-def cleanup():
-    dist.destroy_process_group()
+    # Set the device for this process
+    torch.cuda.set_device(local_rank)
+    print(f"Rank {rank} initialization complete. Using device cuda:{local_rank}")
+
+    return local_rank, rank, world_size
+
+def cleanup_distributed():
+    """Cleans up the distributed environment."""
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 def train_encoder_classifier(
@@ -97,10 +127,12 @@ def train_encoder_classifier(
 ):
     # Move model to device first
     model = model.to(device)
-    
+    local_rank = device.index # Assumes device is like torch.device('cuda:N')
+
     # Wrap model with DDP
     if world_size > 1:
-        model = DDP(model, device_ids=[rank], output_device=rank)
+        # Pass the local rank for device_ids
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False) # Consider find_unused if needed
         if rank == 0:
             print(f"Model wrapped with DDP, using {world_size} GPUs")
     
@@ -408,259 +440,157 @@ def train_encoder_classifier(
             writer.close()
 
 
-def train(rank, world_size, args):
+def main(args):
+    """Main function to setup and run training."""
+    local_rank, rank, world_size = setup_distributed()
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() and world_size > 0 else "cpu")
+
+    # --- Dataset Loading --- (Moved from old 'train' function)
+    if rank == 0:
+        print(f"Loading dataset: {args.dataset}")
+    # ... (Retry mechanism for dataset loading, use 'rank' for rank == 0 checks) ...
+    # Load datasets (ensure this happens on all ranks or is synchronized)
     try:
-        setup(rank, world_size)
-        
-        # Load the specified dataset with error handling
-        if rank == 0:
-            print(f"Loading dataset: {args.dataset}")
-            
-        # Retry mechanism for dataset loading
-        max_retries = 3
-        retry_delay = 5  # seconds
-        
-        for attempt in range(max_retries):
-            try:
-                train_dataset_func, val_dataset_func = DATASETS[args.dataset]
-                
-                if rank == 0:
-                    print(f"Initializing training dataset (attempt {attempt+1}/{max_retries})...")
-                train_dataset = train_dataset_func()
-                
-                if rank == 0:
-                    print(f"Initializing validation dataset (attempt {attempt+1}/{max_retries})...")
-                val_dataset = val_dataset_func()
-                
-                # If we got here, dataset loading succeeded
-                break
-            except Exception as e:
-                if rank == 0:
-                    print(f"Error loading dataset (attempt {attempt+1}/{max_retries}): {str(e)}")
-                    traceback.print_exc()
-                
-                if attempt < max_retries - 1:
-                    if rank == 0:
-                        print(f"Retrying in {retry_delay} seconds...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    if rank == 0:
-                        print("Failed to load dataset after multiple attempts. Exiting.")
-                    cleanup()
-                    return
-        
-        # Make sure all processes get past the dataset loading
-        if world_size > 1:
-            dist.barrier()
-        
-        # Safely get dataset properties
-        if not hasattr(train_dataset, 'num_classes'):
-            if rank == 0:
-                print("Warning: Dataset doesn't have num_classes attribute. Attempting to determine from data...")
-            # Try to determine num_classes from the dataset
-            try:
-                # Get a sample and check its label dimension
-                sample_data = train_dataset[0]
-                if isinstance(sample_data, tuple) and len(sample_data) >= 2:
-                    if isinstance(sample_data[1], int):
-                        num_classes = max(sample_data[1], 1) + 1  # Assuming 0-indexed classes
-                        if rank == 0:
-                            print(f"Detected {num_classes} classes")
-                    elif isinstance(sample_data[1], torch.Tensor) and sample_data[1].dim() == 1:
-                        num_classes = sample_data[1].size(0)
-                        if rank == 0:
-                            print(f"Detected {num_classes} classes from tensor dimension")
-                    else:
-                        num_classes = 1000  # Fallback to a common value
-                        if rank == 0:
-                            print(f"Using default value of {num_classes} classes")
-                else:
-                    num_classes = 1000  # Fallback to a common value
-                    if rank == 0:
-                        print(f"Using default value of {num_classes} classes")
-            except:
-                num_classes = 1000  # Fallback to a common value
-                if rank == 0:
-                    print(f"Failed to determine num_classes. Using default value of {num_classes}")
-        else:
-            num_classes = train_dataset.num_classes
-        
-        # Synchronize num_classes across all processes
-        if world_size > 1:
-            num_classes_tensor = torch.tensor(num_classes, device=f"cuda:{rank}")
-            dist.broadcast(num_classes_tensor, src=0)
-            num_classes = num_classes_tensor.item()
-        
-        # Create distributed samplers with proper error handling
-        try:
-            if rank == 0:
-                print("Creating data samplers...")
-                
-            train_sampler = DistributedSampler(train_dataset) if world_size > 1 else None
-            val_sampler = DistributedSampler(val_dataset, shuffle=False) if world_size > 1 else None
-        except Exception as e:
-            if rank == 0:
-                print(f"Error creating distributed samplers: {str(e)}")
-                print("Falling back to non-distributed sampling")
-            train_sampler = None
-            val_sampler = None
-        
-        # Wait for samplers to be created
-        if world_size > 1:
-            dist.barrier()
-        
-        # Create safe data loaders with error handling
-        try:
-            if rank == 0:
-                print("Creating data loaders...")
-            
-            # Reduce batch size if memory is a concern
-            effective_batch_size = args.batch_size
-            
-            # DataLoader kwargs that are conditional
-            num_workers = 4 # <-- CHANGE HERE: Start with 4 workers per DataLoader
-            dataloader_kwargs = {
-                'batch_size': effective_batch_size,
-                'pin_memory': True, # Keep pin_memory=True for faster CPU->GPU transfer
-                'num_workers': num_workers,
-            }
-            # Only add timeout when using workers
-            if num_workers > 0:
-                 dataloader_kwargs['timeout'] = 120 # Increase timeout slightly
-            
-            train_loader = DataLoader(
-                train_dataset,
-                shuffle=(train_sampler is None),
-                sampler=train_sampler,
-                drop_last=True,  # Prevent issues with uneven batch sizes
-                **dataloader_kwargs
-            )
-            
-            val_loader = DataLoader(
-                val_dataset,
-                shuffle=False,
-                sampler=val_sampler,
-                drop_last=False,  # Keep all validation samples
-                **dataloader_kwargs
-            )
-            
-            # Update global variable safely
-            if rank == 0:
-                global TRAIN_TOTAL
-                try:
-                    TRAIN_TOTAL = len(train_dataset)
-                except:
-                    TRAIN_TOTAL = effective_batch_size * len(train_loader)
-                    if rank == 0:
-                        print(f"Couldn't determine dataset size, using batch_size * num_batches: {TRAIN_TOTAL}")
-                
-            # Wait for data loaders to be created
-            if world_size > 1:
-                dist.barrier()
-                
-        except Exception as e:
-            if rank == 0:
-                print(f"Error creating data loaders: {str(e)}")
-                traceback.print_exc()
-            cleanup()
-            return
-        
-        try:
-            # Create the model
-            if rank == 0:
-                print("Creating model...")
-            encoder = DEFAULT_2D_ENCODER
-            model = Encoder2DClassifier(encoder, num_classes)
-            
-            # Train the model
-            device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
-            weight_decay = args.weight_decay
-            epochs = args.epochs
-            learning_rate = args.lr
-
-            # Adjust learning rate based on world_size for stability
-            if world_size > 1:
-                learning_rate = learning_rate * world_size
-                if rank == 0:
-                    print(f"Adjusting learning rate for distributed training: {learning_rate}")
-
-            if rank == 0:
-                print(f"Starting training on device: {device}")
-                
-            train_encoder_classifier(
-                model,
-                train_loader,
-                val_loader,
-                num_epochs=epochs,
-                learning_rate=learning_rate,
-                device=device,
-                rank=rank,
-                world_size=world_size,
-                weight_decay=weight_decay,
-                resume_from=args.resume,
-                log_dir=args.log_dir
-            )
-        except Exception as e:
-            if rank == 0:
-                print(f"Error during model creation or training: {str(e)}")
-                traceback.print_exc()
+        train_dataset_func, val_dataset_func = DATASETS[args.dataset]
+        # Consider downloading/preparing only on rank 0 and using barrier
+        # if dist.is_initialized() and rank != 0:
+        #     dist.barrier() # Wait for rank 0
+        train_dataset = train_dataset_func()
+        val_dataset = val_dataset_func()
+        # if dist.is_initialized() and rank == 0:
+        #     dist.barrier() # Signal completion
     except Exception as e:
         if rank == 0:
-            print(f"Unhandled exception in train function: {str(e)}")
+            print(f"Error loading dataset: {str(e)}")
+            traceback.print_exc()
+        cleanup_distributed()
+        return
+    # --- End Dataset Loading ---
+
+    if world_size > 1: dist.barrier() # Ensure datasets loaded everywhere
+
+    # --- Determine Num Classes --- (Moved from old 'train' function)
+    # ... (Safely get num_classes, use 'rank' for rank == 0 checks)
+    # ... (Synchronize num_classes using dist.broadcast if world_size > 1)
+    try:
+        num_classes = getattr(train_dataset, 'num_classes', 1000) # Default
+        if rank == 0 and not hasattr(train_dataset, 'num_classes'):
+             print(f"Warning: Using default {num_classes} classes.")
+    except Exception:
+         num_classes = 1000
+         if rank == 0:
+              print(f"Error getting num_classes. Using default {num_classes}.")
+
+    if world_size > 1:
+        num_classes_tensor = torch.tensor(num_classes, device=device)
+        dist.broadcast(num_classes_tensor, src=0)
+        num_classes = num_classes_tensor.item()
+    # --- End Num Classes ---
+
+    # --- Samplers and Loaders --- (Moved from old 'train' function)
+    # ... (Create samplers and loaders, use 'rank' for rank == 0 checks)
+    # ... (Set num_workers=4 or from args)
+    train_sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank) if world_size > 1 else None
+    val_sampler = DistributedSampler(val_dataset, num_replicas=world_size, rank=rank, shuffle=False) if world_size > 1 else None
+
+    num_workers = 4 # Or use args.num_workers if added
+    dataloader_kwargs = {
+        'batch_size': args.batch_size,
+        'pin_memory': True,
+        'num_workers': num_workers,
+        'persistent_workers': num_workers > 0, # Good practice
+    }
+    if num_workers > 0:
+        dataloader_kwargs['timeout'] = 120
+
+    train_loader = DataLoader(
+        train_dataset,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        drop_last=True,
+        **dataloader_kwargs
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        shuffle=False,
+        sampler=val_sampler,
+        drop_last=False,
+        **dataloader_kwargs
+    )
+
+    # Determine TRAIN_TOTAL safely
+    global TRAIN_TOTAL
+    try:
+        # Check if dataset object has __len__
+        if hasattr(train_dataset, '__len__'):
+            TRAIN_TOTAL = len(train_dataset)
+        else:
+            raise TypeError # Fallback if no len
+    except TypeError:
+        TRAIN_TOTAL = args.batch_size * len(train_loader) * world_size # Estimate
+        if rank == 0:
+            print(f"Couldn't determine dataset size via len(), estimated total samples: {TRAIN_TOTAL}")
+    # --- End Samplers/Loaders ---
+
+    # --- Model Creation --- (Moved from old 'train' function)
+    if rank == 0:
+        print("Creating model...")
+    # --- Type Hint Fix Attempt ---
+    encoder = cast(Encoder2D, DEFAULT_2D_ENCODER)
+    # Ensure num_classes is int
+    num_classes = int(num_classes)
+    model = Encoder2DClassifier(encoder, num_classes)
+    # --- End Type Hint Fix ---
+
+    # Adjust learning rate
+    learning_rate = args.lr
+    if world_size > 1:
+        # Simple linear scaling rule
+        learning_rate = learning_rate * world_size
+        if rank == 0:
+            print(f"Adjusting learning rate for distributed training ({world_size} GPUs): {learning_rate:.6f}")
+
+    if rank == 0:
+        print(f"Starting training on device: {device} (Global Rank {rank}/{world_size})")
+
+    # --- Call Training Loop ---
+    try:
+        train_encoder_classifier(
+            model,
+            train_loader,
+            val_loader,
+            num_epochs=args.epochs,
+            learning_rate=learning_rate,
+            device=device, # Pass cuda:local_rank
+            rank=rank,     # Pass global rank
+            world_size=world_size,
+            weight_decay=args.weight_decay,
+            resume_from=args.resume,
+            log_dir=args.log_dir
+        )
+    except Exception as e:
+        if rank == 0:
+            print(f"Error during training loop: {str(e)}")
             traceback.print_exc()
     finally:
-        try:
-            cleanup()
-        except:
-            pass
-
+        cleanup_distributed()
+    # --- End Training Call ---
 
 if __name__ == "__main__":
-    # Import datetime here to avoid circular imports
-    from datetime import timedelta
-    
+    # Simplified entry point
     parser = argparse.ArgumentParser(description="Train Encoder2D Classifier")
     parser.add_argument(
-        "--dataset",
-        type=str,
-        required=True,
-        choices=DATASETS.keys(),
-        help="Name of the dataset to use",
+        "--dataset", type=str, required=True, choices=DATASETS.keys(),
+        help="Name of the dataset to use"
     )
     parser.add_argument("--resume", type=str, help="Path to checkpoint to resume from")
-    parser.add_argument("--epochs", type=int, help="Epochs", default=30)
-    parser.add_argument("--lr", type=float, help="Learning Rate", default=1e-3)
-    parser.add_argument("--batch_size", type=int, help="Batch Size", default=64)
-    parser.add_argument("--weight_decay", type=float, help="Weight Decay", default=1e-5)
+    parser.add_argument("--epochs", type=int, default=30, help="Epochs")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Base Learning Rate (will be scaled by world_size)")
+    parser.add_argument("--batch_size", type=int, default=64, help="Per-GPU Batch Size")
+    parser.add_argument("--weight_decay", type=float, default=1e-5, help="Weight Decay")
     parser.add_argument("--log_dir", type=str, default="./profiler_logs", help="Directory for profiler logs")
+    # Add num_workers arg?
+    # parser.add_argument("--num_workers", type=int, default=4, help="DataLoader workers per process")
     args = parser.parse_args()
-    
-    # Set NCCL environment variables for better reliability
-    os.environ['NCCL_DEBUG'] = 'INFO'  # Set to INFO for debugging, WARN for production
-    os.environ['TORCH_NCCL_BLOCKING_WAIT'] = '1'
-    os.environ['TORCH_NCCL_ASYNC_ERROR_HANDLING'] = '1'
-    os.environ['NCCL_IB_TIMEOUT'] = '30'  # 30 second timeout instead of default
-    
-    # Suppress P2P disabled warnings
-    os.environ['NCCL_IGNORE_DISABLED_P2P'] = '1'
-    
-    world_size = torch.cuda.device_count()
-    if world_size > 1:
-        try:
-            # Try with spawn first
-            print(f"Starting distributed training with {world_size} GPUs")
-            mp.spawn(
-                train,
-                args=(world_size, args),
-                nprocs=world_size,
-                join=True
-            )
-        except Exception as e:
-            print(f"Error in distributed training: {str(e)}")
-            traceback.print_exc()
-            print("Falling back to single GPU training...")
-            train(0, 1, args)
-    else:
-        print("Using single GPU or CPU for training")
-        train(0, 1, args)
+
+    main(args)

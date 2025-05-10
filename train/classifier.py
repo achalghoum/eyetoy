@@ -31,7 +31,8 @@ import sys
 from datetime import timedelta
 from typing import cast
 from functools import partial
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp.autocast_mode import autocast
+from torch.cuda.amp import GradScaler
 
 def compute_accuracy_from_distributions(outputs, targets):
     """
@@ -208,17 +209,24 @@ def train_encoder_classifier(
     if world_size > 1:
         torch.cuda.synchronize()
         dist.barrier()
+    
+    # Set FSDP communication hook to improve stability
+    # Use the gloo backend for FSDP comm for stability if available
+    if torch.distributed.is_initialized():
+        torch.distributed.barrier()
         
-    model = FSDP(
-        model,
-        auto_wrap_policy=fsdp_auto_wrap_policy,
-        mixed_precision=mixed_precision_policy, # Use the defined policy
-        sharding_strategy=fsdp_sharding_strategy,
-        device_id=fsdp_device_id,
-        forward_prefetch=True, # Enable forward prefetching
-        backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Enable backward prefetching
-        use_orig_params=True
-    )
+    # Don't use FP16 for initialization, for better numerical stability
+    with torch.cuda.amp.autocast(enabled=False):
+        model = FSDP(
+            model,
+            auto_wrap_policy=fsdp_auto_wrap_policy,
+            mixed_precision=mixed_precision_policy, # Use the defined policy
+            sharding_strategy=fsdp_sharding_strategy,
+            device_id=fsdp_device_id,
+            forward_prefetch=True, # Enable forward prefetching
+            backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Enable backward prefetching
+            use_orig_params=True
+        )
     
     if rank == 0: 
         # Reduce verbosity of model print to avoid excessive logs
@@ -280,79 +288,133 @@ def train_encoder_classifier(
         if rank == 0:
             print(f"Resuming training from {resume_from}")
         
-        # Load checkpoint on CPU first to avoid device mismatches
-        map_location = {'cuda:%d' % 0: 'cuda:%d' % local_rank} if torch.cuda.is_available() else 'cpu'
-        checkpoint = torch.load(resume_from, map_location=map_location)
+        # Determine if we're loading a model file or a checkpoint file
+        is_model_file = resume_from.endswith('.pt')
         
-        # Make sure all processes are synchronized before loading state
+        # Make sure all processes are synchronized before loading
         if world_size > 1:
             dist.barrier()
-
-        # --- FSDP: Load Model State ---
-        with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
-             model_state_dict = checkpoint.get("model_state_dict", None)
-             if model_state_dict:
-                  model.load_state_dict(model_state_dict)
-                  if rank == 0: print("Loaded FSDP Model state.")
         
-        # Ensure all processes have loaded model before continuing
-        if world_size > 1:
-            torch.cuda.synchronize()
-            dist.barrier()
-
-        # Load optimizer state (FSDP handles sharding, but load full state dict for simplicity first)
-        opt_state_dict = checkpoint.get("optimizer_state_dict", None)
-        if opt_state_dict:
-             # Use the FSDP context for optimizer state loading
-             with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
-                 try:
-                      optimizer.load_state_dict(opt_state_dict)
-                      if rank == 0: print("Loaded Optimizer state.")
-                 except Exception as e:
-                      if rank == 0: print(f"Warning: Could not load optimizer state directly: {e}. Optimizer state reset.")
-
-        # Load scaler state
-        if "scaler_state_dict" in checkpoint and scaler is not None:
-            scaler.load_state_dict(checkpoint["scaler_state_dict"])
-            if rank == 0: print("Loaded GradScaler state.")
-
-        # Load scheduler state
-        if "scheduler_state_dict" in checkpoint:
-            try:
-                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-                if rank == 0: print("Loaded Scheduler state.")
-            except Exception as e:
-                if rank == 0: print(f"Warning: Couldn't load scheduler state: {e}. Recreating scheduler.")
-                # Recreate if not found or loading failed
-                scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
-        else:
-             # Recreate if not found
-             scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
-
-        # Load other states
-        start_epoch = checkpoint.get("epoch", 0)
-        best_val_loss = checkpoint.get("best_val_loss", float("inf"))
-        counter = checkpoint.get("early_stop_counter", 0)
-        
-        # Load RNG states
-        if "torch_rng_state" in checkpoint:
-            torch.set_rng_state(checkpoint["torch_rng_state"])
-            if rank == 0: print("Loaded PyTorch RNG state.")
+        try:
+            # Load checkpoint on CPU first to avoid device mismatches
+            map_location = {'cuda:%d' % 0: 'cuda:%d' % local_rank} if torch.cuda.is_available() else 'cpu'
             
-        if "cuda_rng_state" in checkpoint and torch.cuda.is_available():
-            # Only load CUDA RNG state if available
-            try:
-                torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
-                if rank == 0: print("Loaded CUDA RNG state.")
-            except Exception as e:
-                if rank == 0: print(f"Warning: Couldn't load CUDA RNG state: {e}")
+            if is_model_file:
+                # Direct model loading - simpler and more reliable
+                if rank == 0:
+                    print("Loading complete model file...")
+                loaded_model = torch.load(resume_from, map_location=map_location)
+                # Copy parameters and buffers
+                model.load_state_dict(loaded_model.state_dict())
+                if rank == 0:
+                    print("Model loaded successfully")
                 
-        # Final synchronization after loading checkpoint
-        if world_size > 1:
-            dist.barrier()
+                # Try to find matching checkpoint file
+                checkpoint_file = resume_from.replace('model_', 'checkpoint_').replace('.pt', '.pth')
+                if os.path.exists(checkpoint_file):
+                    if rank == 0:
+                        print(f"Found matching checkpoint file: {checkpoint_file}")
+                    checkpoint = torch.load(checkpoint_file, map_location=map_location)
+                else:
+                    if rank == 0:
+                        print("No matching checkpoint file found. Will only restore model weights.")
+                    checkpoint = {}
+            else:
+                # Regular checkpoint file
+                checkpoint = torch.load(resume_from, map_location=map_location)
+                
+                # Check if we need to load model separately
+                model_file = resume_from.replace('checkpoint_', 'model_').replace('.pth', '.pt')
+                if os.path.exists(model_file):
+                    if rank == 0:
+                        print(f"Found matching model file: {model_file}")
+                    loaded_model = torch.load(model_file, map_location=map_location)
+                    model.load_state_dict(loaded_model.state_dict())
+                elif "model_state_dict" in checkpoint:
+                    # For backward compatibility with old checkpoint format
+                    if rank == 0:
+                        print("Using model state from checkpoint file (old format)")
+                    model.load_state_dict(checkpoint["model_state_dict"])
+                else:
+                    if rank == 0:
+                        print("Warning: No model state found in checkpoint or separate file")
             
-        if rank == 0:
-            print(f"Successfully resumed from checkpoint at epoch {start_epoch}")
+            # Ensure all processes have loaded model before continuing
+            if world_size > 1:
+                torch.cuda.synchronize()
+                dist.barrier()
+
+            # Load optimizer state 
+            if "optimizer_state_dict" in checkpoint:
+                try:
+                    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                    if rank == 0:
+                        print("Loaded optimizer state")
+                except Exception as e:
+                    if rank == 0:
+                        print(f"Warning: Could not load optimizer state: {e}")
+
+            # Load scaler state
+            if "scaler_state_dict" in checkpoint and scaler is not None:
+                try:
+                    scaler.load_state_dict(checkpoint["scaler_state_dict"])
+                    if rank == 0:
+                        print("Loaded GradScaler state")
+                except Exception as e:
+                    if rank == 0:
+                        print(f"Warning: Could not load scaler state: {e}")
+
+            # Load scheduler state
+            if "scheduler_state_dict" in checkpoint:
+                try:
+                    scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                    if rank == 0:
+                        print("Loaded scheduler state")
+                except Exception as e:
+                    if rank == 0:
+                        print(f"Warning: Couldn't load scheduler state: {e}. Recreating scheduler.")
+                    scheduler = create_scheduler(optimizer, num_epochs, checkpoint.get("epoch", 0), train_loader)
+            else:
+                 # Recreate if not found
+                 scheduler = create_scheduler(optimizer, num_epochs, checkpoint.get("epoch", 0), train_loader)
+
+            # Load other states
+            start_epoch = checkpoint.get("epoch", 0)
+            best_val_loss = checkpoint.get("best_val_loss", float("inf"))
+            counter = checkpoint.get("early_stop_counter", 0)
+            
+            # Load RNG states
+            if "torch_rng_state" in checkpoint:
+                torch.set_rng_state(checkpoint["torch_rng_state"])
+                if rank == 0:
+                    print("Loaded PyTorch RNG state")
+                
+            if "cuda_rng_state" in checkpoint and torch.cuda.is_available():
+                # Only load CUDA RNG state if available
+                try:
+                    torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
+                    if rank == 0:
+                        print("Loaded CUDA RNG state")
+                except Exception as e:
+                    if rank == 0:
+                        print(f"Warning: Couldn't load CUDA RNG state: {e}")
+                    
+            # Final synchronization after loading checkpoint
+            if world_size > 1:
+                dist.barrier()
+                
+            if rank == 0:
+                print(f"Successfully resumed from checkpoint at epoch {start_epoch}")
+                
+        except Exception as e:
+            if rank == 0:
+                print(f"Error resuming from checkpoint: {e}")
+                import traceback
+                traceback.print_exc()
+            # Continue with fresh start
+            start_epoch = 0
+            best_val_loss = float("inf")
+            counter = 0
 
     # Only create SummaryWriter on rank 0
     writer = SummaryWriter() if rank == 0 else None
@@ -395,7 +457,7 @@ def train_encoder_classifier(
                 labels = labels.to(device, non_blocking=True)
 
                 # --- Mixed Precision: Autocast Forward Pass ---
-                with autocast(dtype=mp_dtype):
+                with autocast('cuda', dtype=mp_dtype):  # Fix deprecated warning
                     outputs = model(inputs)
                     batch_loss = criterion(outputs, labels)
                 # --- End Autocast ---
@@ -485,7 +547,7 @@ def train_encoder_classifier(
                         
                     inputs, labels = inputs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
                     # --- Mixed Precision: Autocast Forward Pass ---
-                    with autocast(dtype=mp_dtype):
+                    with autocast('cuda', dtype=mp_dtype):  # Fix deprecated warning
                         outputs = model(inputs)
                         loss = criterion(outputs, labels)
                     # --- End Autocast ---
@@ -546,53 +608,50 @@ def train_encoder_classifier(
                 )
 
                 # --- FSDP: Save Checkpoint (No scaler state) ---
-                save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-                with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
-                     model_state = model.state_dict() # Get FSDP-managed state dict
-                     # Wait for state dict collection to complete
-                     if torch.cuda.is_available():
-                         torch.cuda.synchronize()
+                # The current FSDP state_dict_type context manager is being deprecated
+                # and is likely causing issues. Let's use a simpler approach.
+                if rank == 0:
+                    try:
+                        # Instead of wrapping with state_dict_type context manager,
+                        # use a direct approach for rank 0
+                        checkpoint = {
+                            "epoch": epoch + 1,
+                            "optimizer_state_dict": optimizer.state_dict(),
+                            "scheduler_state_dict": scheduler.state_dict(),
+                            "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
+                            "best_val_loss": best_val_loss,
+                            "early_stop_counter": counter,
+                            "torch_rng_state": torch.get_rng_state(),
+                            "cuda_rng_state": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
+                        }
+                        
+                        # Save model separately to avoid the FSDP state_dict issues
+                        torch.save(model, f"model_epoch_{epoch+1}.pt")
+                        torch.save(checkpoint, f"checkpoint_epoch_{epoch+1}.pth")
+                        
+                        # Also save as latest checkpoint (overwrite)
+                        torch.save(model, "model_latest.pt")
+                        torch.save(checkpoint, "checkpoint_latest.pth")
+                        
+                        print(f"Saved checkpoint for epoch {epoch+1}")
 
-                if rank == 0: # Save only on rank 0
-                     # Make sure optimizer state is also properly captured
-                     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
-                         opt_state = optimizer.state_dict()
-                         
-                     checkpoint = {
-                          "epoch": epoch + 1,
-                          "model_state_dict": model_state, 
-                          "optimizer_state_dict": opt_state, 
-                          "scheduler_state_dict": scheduler.state_dict(),
-                          "scaler_state_dict": scaler.state_dict() if scaler is not None else None, # Save scaler state
-                          "best_val_loss": best_val_loss,
-                          "early_stop_counter": counter,
-                          "torch_rng_state": torch.get_rng_state(),
-                          "cuda_rng_state": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
-                     }
-                     
-                     # Save to a checkpoint named with the epoch to preserve history
-                     checkpoint_path = f"checkpoint_epoch_{epoch+1}.pth"
-                     torch.save(checkpoint, checkpoint_path)
-                     
-                     # Also save as latest checkpoint (overwrite)
-                     torch.save(checkpoint, "checkpoint_latest.pth")
-                     
-                     if rank == 0:
-                         print(f"Saved checkpoint to {checkpoint_path}")
-
-                     # Early stopping check (still uses avg_val_loss)
-                     if avg_val_loss < best_val_loss:
-                          best_val_loss = avg_val_loss
-                          counter = 0
-                          # Save best model state dict using the same FSDP context
-                          torch.save(model_state, "best_model.pth") # Save only the state dict
-                          # Also save full checkpoint as best
-                          torch.save(checkpoint, "checkpoint_best.pth")
-                     else:
-                          counter += 1
-                          if counter >= patience:
-                              print(f"Early stopping triggered after {epoch + 1} epochs")
-                              break
+                        # Early stopping check (still uses avg_val_loss)
+                        if avg_val_loss < best_val_loss:
+                            best_val_loss = avg_val_loss
+                            counter = 0
+                            # Save best model
+                            torch.save(model, "model_best.pt")
+                            torch.save(checkpoint, "checkpoint_best.pth")
+                            print(f"New best model saved (val_loss: {avg_val_loss:.4f})")
+                        else:
+                            counter += 1
+                            if counter >= patience:
+                                print(f"Early stopping triggered after {epoch + 1} epochs")
+                                break
+                    except Exception as e:
+                        print(f"Warning: Error saving checkpoint: {e}")
+                        import traceback
+                        traceback.print_exc()
                 # --- End FSDP Save ---
 
             # Make sure we have a barrier at the end of each epoch

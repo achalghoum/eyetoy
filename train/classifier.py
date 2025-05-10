@@ -203,6 +203,12 @@ def train_encoder_classifier(
     )
 
     if rank == 0: print("Wrapping model with FSDP (Mixed Precision Enabled)...")
+    
+    # Make sure all processes are synchronized before FSDP wrap
+    if world_size > 1:
+        torch.cuda.synchronize()
+        dist.barrier()
+        
     model = FSDP(
         model,
         auto_wrap_policy=fsdp_auto_wrap_policy,
@@ -212,9 +218,19 @@ def train_encoder_classifier(
         forward_prefetch=True, # Enable forward prefetching
         backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Enable backward prefetching
         use_orig_params=True
-        # cpu_offload=CPUOffload(offload_params=True), # Optional: If memory is extremely tight
     )
-    if rank == 0: print(f"FSDP Model Info:\n{model}")
+    
+    if rank == 0: 
+        # Reduce verbosity of model print to avoid excessive logs
+        model_summary = str(model).split('\n')[:5]
+        model_summary.append('...')
+        model_summary.extend(str(model).split('\n')[-3:])
+        print(f"FSDP Model Info (summarized):\n" + '\n'.join(model_summary))
+        
+    # Make sure all processes are synchronized after FSDP wrap
+    if world_size > 1:
+        torch.cuda.synchronize()
+        dist.barrier()
     # --- End FSDP Configuration ---
 
 
@@ -261,10 +277,16 @@ def train_encoder_classifier(
 
     # Resume from checkpoint if specified
     if resume_from and os.path.exists(resume_from):
-        print(f"Resuming training from {resume_from}")
+        if rank == 0:
+            print(f"Resuming training from {resume_from}")
+        
         # Load checkpoint on CPU first to avoid device mismatches
         map_location = {'cuda:%d' % 0: 'cuda:%d' % local_rank} if torch.cuda.is_available() else 'cpu'
         checkpoint = torch.load(resume_from, map_location=map_location)
+        
+        # Make sure all processes are synchronized before loading state
+        if world_size > 1:
+            dist.barrier()
 
         # --- FSDP: Load Model State ---
         with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
@@ -279,18 +301,15 @@ def train_encoder_classifier(
             dist.barrier()
 
         # Load optimizer state (FSDP handles sharding, but load full state dict for simplicity first)
-        # Note: Loading sharded optimizer state is more complex but memory efficient
         opt_state_dict = checkpoint.get("optimizer_state_dict", None)
         if opt_state_dict:
-             # Need to shard the loaded state dict before loading into FSDP optimizer
-             # Simple load might work if optimizer was created *before* wrapping (not recommended)
-             # Proper way: Load full dict -> FSDP.scatter_full_optim_state_dict -> optimizer.load_state_dict
-             # Start with simple load and see if it errors / works correctly
-             try:
-                  optimizer.load_state_dict(opt_state_dict)
-                  if rank == 0: print("Loaded Optimizer state (attempted simple load).")
-             except Exception as e:
-                  if rank == 0: print(f"Warning: Could not load optimizer state directly: {e}. Optimizer state reset.")
+             # Use the FSDP context for optimizer state loading
+             with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, full_state_dict_config):
+                 try:
+                      optimizer.load_state_dict(opt_state_dict)
+                      if rank == 0: print("Loaded Optimizer state.")
+                 except Exception as e:
+                      if rank == 0: print(f"Warning: Could not load optimizer state directly: {e}. Optimizer state reset.")
 
         # Load scaler state
         if "scaler_state_dict" in checkpoint and scaler is not None:
@@ -299,8 +318,13 @@ def train_encoder_classifier(
 
         # Load scheduler state
         if "scheduler_state_dict" in checkpoint:
-            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-            if rank == 0: print("Loaded Scheduler state.")
+            try:
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+                if rank == 0: print("Loaded Scheduler state.")
+            except Exception as e:
+                if rank == 0: print(f"Warning: Couldn't load scheduler state: {e}. Recreating scheduler.")
+                # Recreate if not found or loading failed
+                scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
         else:
              # Recreate if not found
              scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
@@ -309,6 +333,26 @@ def train_encoder_classifier(
         start_epoch = checkpoint.get("epoch", 0)
         best_val_loss = checkpoint.get("best_val_loss", float("inf"))
         counter = checkpoint.get("early_stop_counter", 0)
+        
+        # Load RNG states
+        if "torch_rng_state" in checkpoint:
+            torch.set_rng_state(checkpoint["torch_rng_state"])
+            if rank == 0: print("Loaded PyTorch RNG state.")
+            
+        if "cuda_rng_state" in checkpoint and torch.cuda.is_available():
+            # Only load CUDA RNG state if available
+            try:
+                torch.cuda.set_rng_state(checkpoint["cuda_rng_state"])
+                if rank == 0: print("Loaded CUDA RNG state.")
+            except Exception as e:
+                if rank == 0: print(f"Warning: Couldn't load CUDA RNG state: {e}")
+                
+        # Final synchronization after loading checkpoint
+        if world_size > 1:
+            dist.barrier()
+            
+        if rank == 0:
+            print(f"Successfully resumed from checkpoint at epoch {start_epoch}")
 
     # Only create SummaryWriter on rank 0
     writer = SummaryWriter() if rank == 0 else None
@@ -329,15 +373,26 @@ def train_encoder_classifier(
             if rank == 0:
                 print(f"Epoch {epoch+1}/{num_epochs} - Starting training with {total_batches} batches")
             
+            # Make sure all processes start the epoch together
+            if world_size > 1:
+                torch.cuda.synchronize()
+                dist.barrier()
+                
+            # Track processing time per batch for debugging
+            batch_start_time = time.time()
+            
             for batch_idx, (inputs, labels) in enumerate(train_loader):
-                if rank == 0 and batch_idx % 10 == 0:
-                    print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
-                # Remove debug print that could cause issues
-                # print(f" BATCH={batch_idx}")
+                # Logging only on rank 0 and at reasonable intervals (not too often)
+                log_this_batch = rank == 0 and (batch_idx == 0 or batch_idx % max(1, total_batches // 10) == 0 or batch_idx == total_batches - 1)
+                
+                if log_this_batch:
+                    batch_time = time.time() - batch_start_time
+                    print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches} (Time: {batch_time:.2f}s)")
+                    batch_start_time = time.time()
 
                 # Move tensors to device first
-                inputs = inputs.to(device)
-                labels = labels.to(device)
+                inputs = inputs.to(device, non_blocking=True)  # Add non_blocking for potential speedup
+                labels = labels.to(device, non_blocking=True)
 
                 # --- Mixed Precision: Autocast Forward Pass ---
                 with autocast(dtype=mp_dtype):
@@ -352,7 +407,9 @@ def train_encoder_classifier(
                 
                 train_correct += batch_correct
                 train_loss += loss_val
-                if rank == 0 and writer is not None:
+                
+                # Only log to tensorboard at reasonable intervals
+                if log_this_batch and writer is not None:
                     writer.add_scalar("Batch Loss/train", loss_val, batch_idx + (len(train_loader) * epoch))
                     writer.add_scalar("Batch Accuracy/train", (100 * batch_correct) / len(labels), batch_idx + (len(train_loader) * epoch))
                     writer.add_scalar("Learning Rate", optimizer.param_groups[0]["lr"], batch_idx + (len(train_loader) * epoch))
@@ -385,10 +442,6 @@ def train_encoder_classifier(
 
                     scheduler.step()
                 
-                # Remove barrier inside batch loop - this can cause deadlocks
-                # if world_size > 1:
-                #    dist.barrier()
-
             if world_size > 1:
                 # Convert metrics to tensors for all_reduce
                 train_loss_tensor = torch.tensor(train_loss).to(device)
@@ -417,9 +470,20 @@ def train_encoder_classifier(
             if rank == 0:
                 print(f"Epoch {epoch+1}/{num_epochs} - Starting validation")
             
+            # Make sure all processes start validation together
+            if world_size > 1:
+                torch.cuda.synchronize()
+                dist.barrier()
+                
+            val_start_time = time.time()
             with torch.no_grad():
-                for inputs, labels in val_loader:
-                    inputs, labels = inputs.to(device), labels.to(device)
+                val_batches = len(val_loader)
+                for val_idx, (inputs, labels) in enumerate(val_loader):
+                    # Log progress periodically on rank 0
+                    if rank == 0 and (val_idx == 0 or val_idx % max(1, val_batches // 5) == 0 or val_idx == val_batches - 1):
+                        print(f"Validation: {val_idx}/{val_batches} batches")
+                        
+                    inputs, labels = inputs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
                     # --- Mixed Precision: Autocast Forward Pass ---
                     with autocast(dtype=mp_dtype):
                         outputs = model(inputs)
@@ -430,6 +494,11 @@ def train_encoder_classifier(
                     val_total += labels.size(0)
                     val_correct += predicted.eq(labels).sum().item()
                     top5_correct += (outputs.topk(5, dim=1)[1] == labels.view(-1, 1)).sum().item()
+                    
+            # Log validation time
+            if rank == 0:
+                val_time = time.time() - val_start_time
+                print(f"Validation completed in {val_time:.2f}s")
 
             # Synchronize validation metrics
             if world_size > 1:
@@ -498,9 +567,18 @@ def train_encoder_classifier(
                           "best_val_loss": best_val_loss,
                           "early_stop_counter": counter,
                           "torch_rng_state": torch.get_rng_state(),
+                          "cuda_rng_state": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
                      }
-                     # ... (add numpy state if needed) ...
-                     torch.save(checkpoint, "checkpoint.pth")
+                     
+                     # Save to a checkpoint named with the epoch to preserve history
+                     checkpoint_path = f"checkpoint_epoch_{epoch+1}.pth"
+                     torch.save(checkpoint, checkpoint_path)
+                     
+                     # Also save as latest checkpoint (overwrite)
+                     torch.save(checkpoint, "checkpoint_latest.pth")
+                     
+                     if rank == 0:
+                         print(f"Saved checkpoint to {checkpoint_path}")
 
                      # Early stopping check (still uses avg_val_loss)
                      if avg_val_loss < best_val_loss:
@@ -508,6 +586,8 @@ def train_encoder_classifier(
                           counter = 0
                           # Save best model state dict using the same FSDP context
                           torch.save(model_state, "best_model.pth") # Save only the state dict
+                          # Also save full checkpoint as best
+                          torch.save(checkpoint, "checkpoint_best.pth")
                      else:
                           counter += 1
                           if counter >= patience:

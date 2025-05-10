@@ -32,7 +32,7 @@ from datetime import timedelta
 from typing import cast
 from functools import partial
 from torch.amp.autocast_mode import autocast
-from torch.cuda.amp import GradScaler
+from torch.amp.grad_scaler import GradScaler
 
 def compute_accuracy_from_distributions(outputs, targets):
     """
@@ -273,8 +273,8 @@ def train_encoder_classifier(
     scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
 
     # --- GradScaler for Mixed Precision ---
-    # Enabled=True is default, can be conditional if mixed precision is optional
-    scaler = GradScaler()
+    # Use updated GradScaler initialization to avoid deprecation warning
+    scaler = GradScaler()  # Use default initialization without device_type
     if rank == 0: print(f"GradScaler Initialized: Enabled={scaler.is_enabled()}")
     # --- End GradScaler ---
 
@@ -288,9 +288,6 @@ def train_encoder_classifier(
         if rank == 0:
             print(f"Resuming training from {resume_from}")
         
-        # Determine if we're loading a model file or a checkpoint file
-        is_model_file = resume_from.endswith('.pt')
-        
         # Make sure all processes are synchronized before loading
         if world_size > 1:
             dist.barrier()
@@ -298,46 +295,20 @@ def train_encoder_classifier(
         try:
             # Load checkpoint on CPU first to avoid device mismatches
             map_location = {'cuda:%d' % 0: 'cuda:%d' % local_rank} if torch.cuda.is_available() else 'cpu'
+            checkpoint = torch.load(resume_from, map_location=map_location)
             
-            if is_model_file:
-                # Direct model loading - simpler and more reliable
-                if rank == 0:
-                    print("Loading complete model file...")
-                loaded_model = torch.load(resume_from, map_location=map_location)
-                # Copy parameters and buffers
-                model.load_state_dict(loaded_model.state_dict())
-                if rank == 0:
-                    print("Model loaded successfully")
-                
-                # Try to find matching checkpoint file
-                checkpoint_file = resume_from.replace('model_', 'checkpoint_').replace('.pt', '.pth')
-                if os.path.exists(checkpoint_file):
-                    if rank == 0:
-                        print(f"Found matching checkpoint file: {checkpoint_file}")
-                    checkpoint = torch.load(checkpoint_file, map_location=map_location)
-                else:
-                    if rank == 0:
-                        print("No matching checkpoint file found. Will only restore model weights.")
-                    checkpoint = {}
-            else:
-                # Regular checkpoint file
-                checkpoint = torch.load(resume_from, map_location=map_location)
-                
-                # Check if we need to load model separately
-                model_file = resume_from.replace('checkpoint_', 'model_').replace('.pth', '.pt')
-                if os.path.exists(model_file):
-                    if rank == 0:
-                        print(f"Found matching model file: {model_file}")
-                    loaded_model = torch.load(model_file, map_location=map_location)
-                    model.load_state_dict(loaded_model.state_dict())
-                elif "model_state_dict" in checkpoint:
-                    # For backward compatibility with old checkpoint format
-                    if rank == 0:
-                        print("Using model state from checkpoint file (old format)")
+            # Load model state dict if available
+            if "model_state_dict" in checkpoint and checkpoint["model_state_dict"] is not None:
+                try:
                     model.load_state_dict(checkpoint["model_state_dict"])
-                else:
                     if rank == 0:
-                        print("Warning: No model state found in checkpoint or separate file")
+                        print("Successfully loaded model state")
+                except Exception as e:
+                    if rank == 0:
+                        print(f"Warning: Error loading model state: {e}")
+            else:
+                if rank == 0:
+                    print("No model state found in checkpoint")
             
             # Ensure all processes have loaded model before continuing
             if world_size > 1:
@@ -442,22 +413,19 @@ def train_encoder_classifier(
                 
             # Track processing time per batch for debugging
             batch_start_time = time.time()
+            epoch_start_time = time.time()
+            
+            # Remove log buffer for console output
+            # But keep track of epoch stats
+            train_start = time.time()
             
             for batch_idx, (inputs, labels) in enumerate(train_loader):
-                # Logging only on rank 0 and at reasonable intervals (not too often)
-                log_this_batch = rank == 0 and (batch_idx == 0 or batch_idx % max(1, total_batches // 10) == 0 or batch_idx == total_batches - 1)
-                
-                if log_this_batch:
-                    batch_time = time.time() - batch_start_time
-                    print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches} (Time: {batch_time:.2f}s)")
-                    batch_start_time = time.time()
-
                 # Move tensors to device first
-                inputs = inputs.to(device, non_blocking=True)  # Add non_blocking for potential speedup
+                inputs = inputs.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
 
                 # --- Mixed Precision: Autocast Forward Pass ---
-                with autocast('cuda', dtype=mp_dtype):  # Fix deprecated warning
+                with autocast('cuda', dtype=mp_dtype):
                     outputs = model(inputs)
                     batch_loss = criterion(outputs, labels)
                 # --- End Autocast ---
@@ -470,11 +438,16 @@ def train_encoder_classifier(
                 train_correct += batch_correct
                 train_loss += loss_val
                 
-                # Only log to tensorboard at reasonable intervals
-                if log_this_batch and writer is not None:
+                # Keep full TensorBoard logging for all batches
+                if rank == 0 and writer is not None:
                     writer.add_scalar("Batch Loss/train", loss_val, batch_idx + (len(train_loader) * epoch))
                     writer.add_scalar("Batch Accuracy/train", (100 * batch_correct) / len(labels), batch_idx + (len(train_loader) * epoch))
                     writer.add_scalar("Learning Rate", optimizer.param_groups[0]["lr"], batch_idx + (len(train_loader) * epoch))
+                    
+                    # Add more detailed metrics to TensorBoard
+                    if batch_idx % 100 == 0:  # Log detailed stats periodically
+                        writer.add_histogram("Activations/outputs", outputs, batch_idx + (len(train_loader) * epoch))
+                        writer.add_histogram("Gradients/batch_loss", batch_loss, batch_idx + (len(train_loader) * epoch))
 
                 # --- Mixed Precision: Scale Loss and Backward ---
                 # Scale the loss
@@ -538,29 +511,37 @@ def train_encoder_classifier(
                 dist.barrier()
                 
             val_start_time = time.time()
+            
             with torch.no_grad():
                 val_batches = len(val_loader)
                 for val_idx, (inputs, labels) in enumerate(val_loader):
-                    # Log progress periodically on rank 0
-                    if rank == 0 and (val_idx == 0 or val_idx % max(1, val_batches // 5) == 0 or val_idx == val_batches - 1):
-                        print(f"Validation: {val_idx}/{val_batches} batches")
-                        
+                    # Process validation batch (no console logging)
                     inputs, labels = inputs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
-                    # --- Mixed Precision: Autocast Forward Pass ---
-                    with autocast('cuda', dtype=mp_dtype):  # Fix deprecated warning
+                    with autocast('cuda', dtype=mp_dtype):
                         outputs = model(inputs)
                         loss = criterion(outputs, labels)
-                    # --- End Autocast ---
+                    
                     val_loss += loss.item()
                     _, predicted = outputs.max(1)
                     val_total += labels.size(0)
                     val_correct += predicted.eq(labels).sum().item()
                     top5_correct += (outputs.topk(5, dim=1)[1] == labels.view(-1, 1)).sum().item()
                     
-            # Log validation time
+                    # Add detailed TensorBoard logging for validation
+                    if rank == 0 and writer is not None and val_idx % 10 == 0:
+                        writer.add_scalar("Batch Loss/val", loss.item(), val_idx + (len(val_loader) * epoch))
+                        batch_accuracy = 100.0 * predicted.eq(labels).sum().item() / labels.size(0)
+                        writer.add_scalar("Batch Accuracy/val", batch_accuracy, val_idx + (len(val_loader) * epoch))
+                        if val_idx % 50 == 0:  # Less frequent for validation
+                            writer.add_histogram("Val Activations/outputs", outputs, val_idx + (len(val_loader) * epoch))
+            
+            # Log validation time - only at the end
             if rank == 0:
                 val_time = time.time() - val_start_time
                 print(f"Validation completed in {val_time:.2f}s")
+                # Print epoch total time
+                epoch_time = time.time() - epoch_start_time
+                print(f"Epoch {epoch+1} completed in {epoch_time:.2f}s")
 
             # Synchronize validation metrics
             if world_size > 1:
@@ -592,19 +573,53 @@ def train_encoder_classifier(
 
             # Log metrics on rank 0
             if rank == 0:
+                # Add comprehensive TensorBoard metrics for the entire epoch
                 if writer is not None:
                     writer.add_scalar("Loss/train", avg_train_loss, epoch + 1)
                     writer.add_scalar("Loss/val", avg_val_loss, epoch + 1)
                     writer.add_scalar("Accuracy/train", train_accuracy, epoch + 1)
                     writer.add_scalar("Accuracy/val", val_accuracy, epoch + 1)
                     writer.add_scalar("Top5 Accuracy/val", top5_accuracy, epoch + 1)
+                    
+                    # Add epoch time metrics
+                    writer.add_scalar("Time/epoch_total", time.time() - epoch_start_time, epoch + 1)
+                    writer.add_scalar("Time/train", val_start_time - epoch_start_time, epoch + 1)
+                    writer.add_scalar("Time/validation", time.time() - val_start_time, epoch + 1)
+                    
+                    # Log gradients and parameter norms
+                    # Be selective about which parameters to log to avoid excessive data
+                    grad_samples = 0
+                    weight_samples = 0
+                    max_samples = 10  # Limit the number of parameters we log
+                    
+                    for name, param in model.named_parameters():
+                        if param.requires_grad:
+                            # Only log a limited subset of parameters to avoid overwhelming TensorBoard
+                            if 'weight' in name and weight_samples < max_samples:
+                                try:
+                                    writer.add_histogram(f"Weights/{name}", param.detach().cpu(), epoch + 1)
+                                    writer.add_scalar(f"Norms/weight_{name}", param.detach().norm().item(), epoch + 1)
+                                    weight_samples += 1
+                                except:
+                                    pass  # Skip if tensor conversion fails
+                                    
+                            if param.grad is not None and grad_samples < max_samples:
+                                try:
+                                    writer.add_histogram(f"Gradients/{name}", param.grad.detach().cpu(), epoch + 1)
+                                    writer.add_scalar(f"Norms/grad_{name}", param.grad.detach().norm().item(), epoch + 1) 
+                                    grad_samples += 1
+                                except:
+                                    pass  # Skip if tensor conversion fails
 
+                # Print detailed epoch summary
                 print(
-                    f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {avg_train_loss:.4f}, "
+                    f"Epoch {epoch + 1}/{num_epochs} - "
+                    f"Train Loss: {avg_train_loss:.4f}, "
                     f"Train Accuracy: {train_accuracy:.2f}%, "
                     f"Val Loss: {avg_val_loss:.4f}, "
                     f"Val Accuracy: {val_accuracy:.2f}%, "
-                    f"Top-5 Val Accuracy: {top5_accuracy:.2f}%"
+                    f"Top-5 Val Accuracy: {top5_accuracy:.2f}%, "
+                    f"Time: {time.time() - epoch_start_time:.2f}s"
                 )
 
                 # --- FSDP: Save Checkpoint (No scaler state) ---
@@ -612,10 +627,18 @@ def train_encoder_classifier(
                 # and is likely causing issues. Let's use a simpler approach.
                 if rank == 0:
                     try:
-                        # Instead of wrapping with state_dict_type context manager,
-                        # use a direct approach for rank 0
+                        # Save state_dict instead of full model to avoid pickling errors
+                        model_state_dict = None
+                        try:
+                            # Get model state dict safely
+                            model_state_dict = model.state_dict()
+                        except Exception as e:
+                            print(f"Warning: Could not get model state_dict: {e}")
+                        
+                        # Prepare the checkpoint
                         checkpoint = {
                             "epoch": epoch + 1,
+                            "model_state_dict": model_state_dict,
                             "optimizer_state_dict": optimizer.state_dict(),
                             "scheduler_state_dict": scheduler.state_dict(),
                             "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
@@ -625,12 +648,11 @@ def train_encoder_classifier(
                             "cuda_rng_state": torch.cuda.get_rng_state() if torch.cuda.is_available() else None,
                         }
                         
-                        # Save model separately to avoid the FSDP state_dict issues
-                        torch.save(model, f"model_epoch_{epoch+1}.pt")
-                        torch.save(checkpoint, f"checkpoint_epoch_{epoch+1}.pth")
+                        # Save checkpoint with epoch number
+                        checkpoint_path = f"checkpoint_epoch_{epoch+1}.pth"
+                        torch.save(checkpoint, checkpoint_path)
                         
                         # Also save as latest checkpoint (overwrite)
-                        torch.save(model, "model_latest.pt")
                         torch.save(checkpoint, "checkpoint_latest.pth")
                         
                         print(f"Saved checkpoint for epoch {epoch+1}")
@@ -639,8 +661,7 @@ def train_encoder_classifier(
                         if avg_val_loss < best_val_loss:
                             best_val_loss = avg_val_loss
                             counter = 0
-                            # Save best model
-                            torch.save(model, "model_best.pt")
+                            # Save best checkpoint
                             torch.save(checkpoint, "checkpoint_best.pth")
                             print(f"New best model saved (val_loss: {avg_val_loss:.4f})")
                         else:

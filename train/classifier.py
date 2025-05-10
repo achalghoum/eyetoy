@@ -3,21 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
-from torch.distributed.fsdp import (
-    FullyShardedDataParallel as FSDP,
-    CPUOffload,
-    MixedPrecision,
-    BackwardPrefetch,
-    ShardingStrategy,
-    FullStateDictConfig,
-    StateDictType,
-)
-from torch.distributed.fsdp.wrap import (
-    transformer_auto_wrap_policy,
-    size_based_auto_wrap_policy,
-    enable_wrap,
-    wrap,
-)
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -156,23 +142,6 @@ def cleanup_distributed():
         dist.destroy_process_group()
 
 
-def get_fsdp_wrap_policy():
-    # Import layers needed for the policy inside the function
-    # Assuming Encoder2D is the main transformer block container
-    # and Encoder2DClassifier has self.encoder and self.classifier_head
-    
-    # Size-based auto wrap policy is often more reliable than transformer-based
-    # wrapping when the model architecture isn't a standard transformer
-    min_params = 1_000_000  # Modules with 1M+ params will be wrapped
-    
-    fsdp_auto_wrap_policy = partial(
-        size_based_auto_wrap_policy,
-        min_num_params=min_params
-    )
-    
-    return fsdp_auto_wrap_policy
-
-
 def train_encoder_classifier(
     model,
     train_loader,
@@ -185,67 +154,32 @@ def train_encoder_classifier(
     weight_decay=1e-5,
     resume_from=None,
 ):
-    # FSDP requires model on the correct device *before* wrapping
+    # Move model to device before wrapping
     model = model.to(device)
-    local_rank = device.index
+    local_rank = device.index if device.type == 'cuda' else -1
 
-    # --- FSDP Configuration ---
-    fsdp_sharding_strategy = ShardingStrategy.SHARD_GRAD_OP
-    fsdp_auto_wrap_policy = get_fsdp_wrap_policy()
-    fsdp_device_id = torch.cuda.current_device()
+    # --- Use regular DDP instead of FSDP ---
+    if world_size > 1:
+        if rank == 0: 
+            print("Wrapping model with DDP instead of FSDP for better stability")
+        # Make sure all processes are synchronized before DDP wrap
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        dist.barrier()
+        
+        # Wrap with DDP instead of FSDP - much more reliable
+        model = DDP(model, device_ids=[local_rank] if local_rank != -1 else None)
+        
+        if rank == 0:
+            print(f"DDP Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
+    # --- End DDP Configuration ---
 
-    # Define the mixed precision policy
-    # Use bfloat16 if available, otherwise float16. BF16 is generally better for training stability.
+    # Define mixed precision dtype
     mp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
-    mixed_precision_policy = MixedPrecision(
-        param_dtype=mp_dtype,
-        reduce_dtype=mp_dtype,
-        buffer_dtype=mp_dtype,
-    )
-
-    if rank == 0: print("Wrapping model with FSDP (Mixed Precision Enabled)...")
     
-    # Make sure all processes are synchronized before FSDP wrap
-    if world_size > 1:
-        torch.cuda.synchronize()
-        dist.barrier()
-    
-    # Set FSDP communication hook to improve stability
-    # Use the gloo backend for FSDP comm for stability if available
-    if torch.distributed.is_initialized():
-        torch.distributed.barrier()
-        
-    # Don't use FP16 for initialization, for better numerical stability
-    with torch.cuda.amp.autocast(enabled=False):
-        model = FSDP(
-            model,
-            auto_wrap_policy=fsdp_auto_wrap_policy,
-            mixed_precision=mixed_precision_policy, # Use the defined policy
-            sharding_strategy=fsdp_sharding_strategy,
-            device_id=fsdp_device_id,
-            forward_prefetch=True, # Enable forward prefetching
-            backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Enable backward prefetching
-            use_orig_params=True
-        )
-    
-    if rank == 0: 
-        # Reduce verbosity of model print to avoid excessive logs
-        model_summary = str(model).split('\n')[:5]
-        model_summary.append('...')
-        model_summary.extend(str(model).split('\n')[-3:])
-        print(f"FSDP Model Info (summarized):\n" + '\n'.join(model_summary))
-        
-    # Make sure all processes are synchronized after FSDP wrap
-    if world_size > 1:
-        torch.cuda.synchronize()
-        dist.barrier()
-    # --- End FSDP Configuration ---
-
-
-    # --- Optimizer: Must be initialized AFTER FSDP wrapping ---
-    # FSDP flattens parameters, so optimizer needs to see the FSDP model params
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused=(torch.cuda.is_available())) # Try fused=True
-    if rank == 0: print("Optimizer initialized after FSDP wrapping.")
+    # --- Optimizer: Must be initialized AFTER DDP wrapping ---
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay, fused=(torch.cuda.is_available()))
+    if rank == 0: print("Optimizer initialized")
     # --- End Optimizer ---
 
     # ADD BACK: Criterion definition
@@ -273,15 +207,9 @@ def train_encoder_classifier(
     scheduler = create_scheduler(optimizer, num_epochs, start_epoch, train_loader)
 
     # --- GradScaler for Mixed Precision ---
-    # Use updated GradScaler initialization to avoid deprecation warning
-    scaler = GradScaler()  # Use default initialization without device_type
+    scaler = GradScaler()
     if rank == 0: print(f"GradScaler Initialized: Enabled={scaler.is_enabled()}")
     # --- End GradScaler ---
-
-    # --- FSDP Checkpointing Configuration ---
-    # Use the new FSDP checkpointing API
-    full_state_dict_config = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
-    # --- End FSDP Checkpointing ---
 
     # Resume from checkpoint if specified
     if resume_from and os.path.exists(resume_from):
@@ -297,10 +225,43 @@ def train_encoder_classifier(
             map_location = {'cuda:%d' % 0: 'cuda:%d' % local_rank} if torch.cuda.is_available() else 'cpu'
             checkpoint = torch.load(resume_from, map_location=map_location)
             
-            # Load model state dict if available
+            # Load model state dict if available - no need for FSDP context
             if "model_state_dict" in checkpoint and checkpoint["model_state_dict"] is not None:
                 try:
-                    model.load_state_dict(checkpoint["model_state_dict"])
+                    # For DDP, we need to handle the module prefix if loading from non-DDP checkpoint
+                    # Extract the state dict
+                    state_dict = checkpoint["model_state_dict"]
+                    
+                    # Let's create a new state dict to avoid in-place modifications
+                    new_state_dict = {}
+                    
+                    # Handle module prefix depending on current model type and checkpoint format
+                    if world_size > 1 and isinstance(model, DDP):
+                        # We're using DDP now
+                        is_ddp_checkpoint = any(k.startswith('module.') for k in state_dict.keys())
+                        if not is_ddp_checkpoint:
+                            # Add 'module.' prefix to keys because current model is DDP but checkpoint isn't
+                            for k, v in state_dict.items():
+                                new_state_dict[f'module.{k}'] = v
+                        else:
+                            # Checkpoint is already DDP format, keep as is
+                            new_state_dict = state_dict
+                    else:
+                        # We're not using DDP now
+                        is_ddp_checkpoint = any(k.startswith('module.') for k in state_dict.keys())
+                        if is_ddp_checkpoint:
+                            # Remove 'module.' prefix because checkpoint is DDP but current model isn't
+                            for k, v in state_dict.items():
+                                if k.startswith('module.'):
+                                    new_state_dict[k[7:]] = v  # 7 is the length of 'module.'
+                                else:
+                                    new_state_dict[k] = v
+                        else:
+                            # Neither is DDP, keep as is
+                            new_state_dict = state_dict
+                    
+                    # Load the processed state dict
+                    model.load_state_dict(new_state_dict)
                     if rank == 0:
                         print("Successfully loaded model state")
                 except Exception as e:
@@ -461,18 +422,28 @@ def train_encoder_classifier(
                     # Unscale gradients before clipping
                     scaler.unscale_(optimizer)
 
-                    # Gradient clipping
-                    total_norm = model.clip_grad_norm_(max_norm=MAX_GRADIENT)
-                    if rank == 0 and (total_norm.isinf() or total_norm.isnan()):
-                        print(f"Warning: Gradient norm is {total_norm} at step {batch_idx}, skipping optimizer step.")
+                    # Gradient clipping - update to use torch.nn.utils instead of FSDP-specific method
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=MAX_GRADIENT)
+                    
+                    # Check for valid gradients
+                    valid_gradients = True
+                    for param in model.parameters():
+                        if param.grad is not None:
+                            if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                                valid_gradients = False
+                                break
+                    
+                    if not valid_gradients:
+                        if rank == 0:
+                            print(f"Warning: Invalid gradients at step {batch_idx}, skipping optimizer step.")
                         optimizer.zero_grad(set_to_none=True) # Still zero grad if skipping
                     else:
-                         # Optimizer step (uses unscaled gradients)
-                         scaler.step(optimizer)
-                         # Update the scaler for the next iteration
-                         scaler.update()
-                         # Zero grad after step
-                         optimizer.zero_grad(set_to_none=True)
+                        # Optimizer step (uses unscaled gradients)
+                        scaler.step(optimizer)
+                        # Update the scaler for the next iteration
+                        scaler.update()
+                        # Zero grad after step
+                        optimizer.zero_grad(set_to_none=True)
                     # --- End Mixed Precision Steps ---
 
                     scheduler.step()
@@ -630,8 +601,12 @@ def train_encoder_classifier(
                         # Save state_dict instead of full model to avoid pickling errors
                         model_state_dict = None
                         try:
-                            # Get model state dict safely
-                            model_state_dict = model.state_dict()
+                            # For DDP models, we need to access the .module attribute
+                            # to get the underlying model's state_dict
+                            if isinstance(model, DDP):
+                                model_state_dict = model.module.state_dict()
+                            else:
+                                model_state_dict = model.state_dict()
                         except Exception as e:
                             print(f"Warning: Could not get model state_dict: {e}")
                         

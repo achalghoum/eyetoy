@@ -99,24 +99,53 @@ def setup_distributed():
     if 'MASTER_PORT' not in os.environ:
          os.environ['MASTER_PORT'] = '12355' # Default port
 
-    # Set NCCL options (moved here for consistency)
+    # Set NCCL options for better stability
     os.environ['NCCL_DEBUG'] = os.environ.get('NCCL_DEBUG', 'WARN') # Default to WARN
     os.environ['TORCH_NCCL_BLOCKING_WAIT'] = '1'
     os.environ['TORCH_NCCL_ASYNC_ERROR_HANDLING'] = '1'
     os.environ['NCCL_IB_TIMEOUT'] = '30'
+    os.environ['NCCL_SOCKET_TIMEOUT'] = '300' # Added longer socket timeout
     os.environ['NCCL_IGNORE_DISABLED_P2P'] = '1'
+    
+    # Enable timeout detection
+    timeout = timedelta(minutes=60) # Increased timeout for large models
 
-    # Initialize the process group
-    dist.init_process_group(
-        backend="nccl",
-        rank=rank,
-        world_size=world_size,
-        timeout=timedelta(minutes=30)
-    )
+    # Initialize the process group with error checking
+    try:
+        dist.init_process_group(
+            backend="nccl",
+            rank=rank,
+            world_size=world_size,
+            timeout=timeout
+        )
+    except Exception as e:
+        print(f"Error initializing process group: {e}")
+        # Try alternative backends if NCCL fails
+        try:
+            print("Retrying with Gloo backend")
+            dist.init_process_group(
+                backend="gloo",
+                rank=rank,
+                world_size=world_size,
+                timeout=timeout
+            )
+        except Exception as e2:
+            print(f"Error initializing with alternative backend: {e2}")
+            print("Running in non-distributed mode")
+            return 0, 0, 1
 
     # Set the device for this process
     torch.cuda.set_device(local_rank)
     print(f"Rank {rank} initialization complete. Using device cuda:{local_rank}")
+    
+    # Make sure the process group is working before proceeding
+    try:
+        dist.barrier()
+        print(f"Rank {rank}: Process group barrier test successful")
+    except Exception as e:
+        print(f"Rank {rank}: Process group barrier test failed: {e}")
+        cleanup_distributed()
+        return 0, 0, 1
 
     return local_rank, rank, world_size
 
@@ -130,15 +159,16 @@ def get_fsdp_wrap_policy():
     # Import layers needed for the policy inside the function
     # Assuming Encoder2D is the main transformer block container
     # and Encoder2DClassifier has self.encoder and self.classifier_head
+    
+    # Size-based auto wrap policy is often more reliable than transformer-based
+    # wrapping when the model architecture isn't a standard transformer
+    min_params = 1_000_000  # Modules with 1M+ params will be wrapped
+    
     fsdp_auto_wrap_policy = partial(
-        transformer_auto_wrap_policy,
-        # Specify the names of the transformer block classes within your model
-        # For now, let's target the top-level Encoder2D and the classifier Linear layer
-        transformer_layer_cls={
-             Encoder2D, # Wrap the whole encoder block
-             nn.Linear, # Wrap Linear layers (like the classifier head)
-        }
+        size_based_auto_wrap_policy,
+        min_num_params=min_params
     )
+    
     return fsdp_auto_wrap_policy
 
 
@@ -242,7 +272,11 @@ def train_encoder_classifier(
              if model_state_dict:
                   model.load_state_dict(model_state_dict)
                   if rank == 0: print("Loaded FSDP Model state.")
-        # --- End FSDP Load ---
+        
+        # Ensure all processes have loaded model before continuing
+        if world_size > 1:
+            torch.cuda.synchronize()
+            dist.barrier()
 
         # Load optimizer state (FSDP handles sharding, but load full state dict for simplicity first)
         # Note: Loading sharded optimizer state is more complex but memory efficient
@@ -298,7 +332,8 @@ def train_encoder_classifier(
             for batch_idx, (inputs, labels) in enumerate(train_loader):
                 if rank == 0 and batch_idx % 10 == 0:
                     print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
-                print(f" BATCH={batch_idx}")
+                # Remove debug print that could cause issues
+                # print(f" BATCH={batch_idx}")
 
                 # Move tensors to device first
                 inputs = inputs.to(device)
@@ -336,7 +371,7 @@ def train_encoder_classifier(
 
                     # Gradient clipping
                     total_norm = model.clip_grad_norm_(max_norm=MAX_GRADIENT)
-                    if rank == 0 and total_norm.isinf() or total_norm.isnan():
+                    if rank == 0 and (total_norm.isinf() or total_norm.isnan()):
                         print(f"Warning: Gradient norm is {total_norm} at step {batch_idx}, skipping optimizer step.")
                         optimizer.zero_grad(set_to_none=True) # Still zero grad if skipping
                     else:
@@ -350,8 +385,9 @@ def train_encoder_classifier(
 
                     scheduler.step()
                 
-                if world_size > 1:
-                    dist.barrier()
+                # Remove barrier inside batch loop - this can cause deadlocks
+                # if world_size > 1:
+                #    dist.barrier()
 
             if world_size > 1:
                 # Convert metrics to tensors for all_reduce
@@ -414,6 +450,9 @@ def train_encoder_classifier(
                 val_correct = val_correct_tensor.item() / world_size
                 val_total = val_total_tensor.item() / world_size
                 top5_correct = top5_correct_tensor.item() / world_size
+                
+                # Add synchronization point after reduction operations
+                dist.barrier()
 
             # Compute validation metrics
             avg_val_loss = val_loss / len(val_loader)
@@ -440,11 +479,16 @@ def train_encoder_classifier(
                 # --- FSDP: Save Checkpoint (No scaler state) ---
                 save_policy = FullStateDictConfig(offload_to_cpu=True, rank0_only=True)
                 with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
-                     # model_state = model.state_dict() # Reverted to original
-                     model_state = model.state_dict() # Reverted to original
-                     opt_state = optimizer.state_dict()
+                     model_state = model.state_dict() # Get FSDP-managed state dict
+                     # Wait for state dict collection to complete
+                     if torch.cuda.is_available():
+                         torch.cuda.synchronize()
 
                 if rank == 0: # Save only on rank 0
+                     # Make sure optimizer state is also properly captured
+                     with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
+                         opt_state = optimizer.state_dict()
+                         
                      checkpoint = {
                           "epoch": epoch + 1,
                           "model_state_dict": model_state, 
@@ -463,10 +507,7 @@ def train_encoder_classifier(
                           best_val_loss = avg_val_loss
                           counter = 0
                           # Save best model state dict using the same FSDP context
-                          with FSDP.state_dict_type(model, StateDictType.FULL_STATE_DICT, save_policy):
-                               # best_model_state = model.state_dict() # Access underlying module - Reverting
-                               best_model_state = model.state_dict() # Reverted to original
-                          torch.save(best_model_state, "best_model.pth") # Save only the state dict
+                          torch.save(model_state, "best_model.pth") # Save only the state dict
                      else:
                           counter += 1
                           if counter >= patience:
@@ -474,7 +515,10 @@ def train_encoder_classifier(
                               break
                 # --- End FSDP Save ---
 
+            # Make sure we have a barrier at the end of each epoch
             if world_size > 1:
+                # Make sure all processes reach this point before proceeding to next epoch
+                torch.cuda.synchronize()  # Ensure CUDA operations are complete
                 dist.barrier()
 
     except KeyboardInterrupt:

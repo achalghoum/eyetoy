@@ -168,7 +168,12 @@ def train_encoder_classifier(
         dist.barrier()
         
         # Wrap with DDP instead of FSDP - much more reliable
-        model = DDP(model, device_ids=[local_rank] if local_rank != -1 else None)
+        model = DDP(
+            model, 
+            device_ids=[local_rank] if local_rank != -1 else None,
+            find_unused_parameters=False,  # Helps with certain gradient layout issues
+            broadcast_buffers=False  # Can help with performance
+        )
         
         if rank == 0:
             print(f"DDP Model initialized with {sum(p.numel() for p in model.parameters())} parameters")
@@ -352,6 +357,25 @@ def train_encoder_classifier(
     writer = SummaryWriter() if rank == 0 else None
 
     try:
+        # --- Pre-initialize common CUDA operations to improve training speed ---
+        if torch.cuda.is_available():
+            # Create a small test batch to initialize CUDA cores and memory
+            if rank == 0:
+                print("Warming up CUDA operations...")
+            dummy_input = torch.zeros(BATCH_SIZE, 3, 224, 224, device=device)
+            dummy_output = model(dummy_input)  # Warm up forward pass
+            del dummy_input, dummy_output
+            torch.cuda.empty_cache()
+            # Set memory management for better performance
+            torch.cuda.set_per_process_memory_fraction(0.9)  # Leave some memory free
+            # Ensure the CUDA kernels are pre-compiled
+            if torch.backends.cudnn.is_available():
+                torch.backends.cudnn.benchmark = True  # May improve performance with fixed input sizes
+        
+        # Synchronize after initialization
+        if world_size > 1:
+            dist.barrier()
+
         for epoch in range(start_epoch, num_epochs):
             if world_size > 1:
                 if hasattr(train_loader.sampler, 'set_epoch'):
@@ -387,6 +411,9 @@ def train_encoder_classifier(
 
                 # --- Mixed Precision: Autocast Forward Pass ---
                 with autocast('cuda', dtype=mp_dtype):
+                    # Ensure contiguous tensors for better memory layout
+                    if inputs.dim() >= 3:  # For image inputs which tend to have stride issues
+                        inputs = inputs.contiguous()
                     outputs = model(inputs)
                     batch_loss = criterion(outputs, labels)
                 # --- End Autocast ---
@@ -488,6 +515,9 @@ def train_encoder_classifier(
                 for val_idx, (inputs, labels) in enumerate(val_loader):
                     # Process validation batch (no console logging)
                     inputs, labels = inputs.to(device, non_blocking=True), labels.to(device, non_blocking=True)
+                    # Ensure contiguous tensors for validation too
+                    if inputs.dim() >= 3:
+                        inputs = inputs.contiguous()
                     with autocast('cuda', dtype=mp_dtype):
                         outputs = model(inputs)
                         loss = criterion(outputs, labels)
@@ -690,6 +720,13 @@ def train_encoder_classifier(
 
 def main(args):
     """Main function to setup and run training."""
+    # Set PyTorch thread settings
+    torch.set_num_threads(min(16, os.cpu_count() or 4))  # Limit threads to avoid oversubscription
+    
+    # Enable TF32 for better performance on Ampere+ GPUs if supported
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    
     local_rank, rank, world_size = setup_distributed()
     device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() and world_size > 0 else "cpu")
 

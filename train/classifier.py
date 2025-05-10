@@ -181,17 +181,11 @@ def train_encoder_classifier(
         device_id=fsdp_device_id,
         forward_prefetch=True, # Enable forward prefetching
         backward_prefetch=BackwardPrefetch.BACKWARD_PRE, # Enable backward prefetching
-        use_orig_params=True, # Uncommented: Required for torch.compile compatibility
         # cpu_offload=CPUOffload(offload_params=True), # Optional: If memory is extremely tight
     )
     if rank == 0: print(f"FSDP Model Info:\n{model}")
     # --- End FSDP Configuration ---
 
-    # --- Compile the model (after FSDP) ---
-    if rank == 0: print("Attempting to compile the model with torch.compile...")
-    model = torch.compile(model) # Use default mode first
-    if rank == 0: print("Model compilation successful (or backend selected).")
-    # --- End Compile ---
 
     # --- Optimizer: Must be initialized AFTER FSDP wrapping ---
     # FSDP flattens parameters, so optimizer needs to see the FSDP model params
@@ -303,7 +297,8 @@ def train_encoder_classifier(
             for batch_idx, (inputs, labels) in enumerate(train_loader):
                 if rank == 0 and batch_idx % 10 == 0:
                     print(f"Epoch {epoch+1}, Batch {batch_idx}/{total_batches}")
-                
+                print(f" BATCH={batch_idx}")
+
                 # Move tensors to device first
                 inputs = inputs.to(device)
                 labels = labels.to(device)
@@ -321,7 +316,6 @@ def train_encoder_classifier(
                 
                 train_correct += batch_correct
                 train_loss += loss_val
-                
                 if rank == 0 and writer is not None:
                     writer.add_scalar("Batch Loss/train", loss_val, batch_idx + (len(train_loader) * epoch))
                     writer.add_scalar("Batch Accuracy/train", (100 * batch_correct) / len(labels), batch_idx + (len(train_loader) * epoch))
